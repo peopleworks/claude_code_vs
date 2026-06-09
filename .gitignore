@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+.claude/
+*.user
+*.suo
+*.userprefs
+
+# Rider / JetBrains
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs / temp
+*.log
