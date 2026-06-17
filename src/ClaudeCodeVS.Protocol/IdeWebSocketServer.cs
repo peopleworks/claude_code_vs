@@ -50,6 +50,16 @@ public sealed class IdeWebSocketServer
     /// </summary>
     public Func<CancellationToken, Task<string>>? DebugContextHandler { get; set; }
 
+    /// <summary>
+    /// Secondary MCP surface for the Phase 2 debug PULL channel (POST /mcp). The CLI launches a tiny
+    /// stdio shim as a normal MCP server; the shim forwards each JSON-RPC message here over HTTP, so the
+    /// model can call vs_debug_state / vs_list_breakpoints / vs_get_frame_locals / vs_evaluate on demand.
+    /// This is a SEPARATE McpServer (its own tool registry) from the IDE-protocol one on the WebSocket -
+    /// the CLI keeps the WebSocket's tools dormant, but treats /mcp's tools as a real, callable server.
+    /// Null until the VSIX wires it; a request then returns an empty 200 (no tools).
+    /// </summary>
+    public McpServer? DebugMcp { get; set; }
+
     public IdeWebSocketServer(int port, string authToken, McpServer mcp)
     {
         _port = port;
@@ -120,6 +130,12 @@ public sealed class IdeWebSocketServer
                 && ctx.Request.Url?.AbsolutePath == "/debug-context")
             {
                 await HandleDebugContextRequestAsync(ctx, ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/mcp")
+            {
+                await HandleMcpRequestAsync(ctx, ct);
                 return;
             }
             ctx.Response.StatusCode = 400;
@@ -258,6 +274,48 @@ public sealed class IdeWebSocketServer
             ctx.Response.ContentType = "application/json";
             ctx.Response.ContentLength64 = bytes.Length;
             await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+            ctx.Response.Close();
+        }
+        catch { /* client gave up */ }
+    }
+
+    /// <summary>
+    /// POST /mcp - the Phase 2 debug PULL surface. One JSON-RPC message in the body, one JSON-RPC message
+    /// back (or an empty 200 for notifications, where HandleAsync returns null). The stdio shim does the
+    /// newline framing; here it's one request per POST. Auth was already validated at the upgrade above.
+    /// </summary>
+    private async Task HandleMcpRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        string? response = null;
+        try
+        {
+            string body;
+            using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                body = await reader.ReadToEndAsync();
+
+            var mcp = DebugMcp;
+            if (mcp != null && body.Length > 0)
+                response = await mcp.HandleAsync(body, ct);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"/mcp request failed: {e.Message}");
+        }
+
+        try
+        {
+            ctx.Response.StatusCode = 200;
+            if (response is not null)
+            {
+                var bytes = Encoding.UTF8.GetBytes(response);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+            }
+            else
+            {
+                ctx.Response.ContentLength64 = 0; // notification / no reply due
+            }
             ctx.Response.Close();
         }
         catch { /* client gave up */ }

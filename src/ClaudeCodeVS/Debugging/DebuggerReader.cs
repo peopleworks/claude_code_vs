@@ -19,9 +19,11 @@ namespace ClaudeCodeVs.Debugging;
 /// </summary>
 internal static class DebuggerReader
 {
-    private const int MaxFrames = 20;    // cap call-stack depth sent to the model
-    private const int MaxLocals = 60;    // cap variables per frame
-    private const int MaxValueLen = 240; // truncate long value renderings (deep object graphs)
+    private const int MaxFrames = 20;        // cap call-stack depth sent to the model
+    private const int MaxLocals = 60;        // cap variables per frame
+    private const int MaxValueLen = 240;     // truncate long value renderings (deep object graphs)
+    private const int MaxBreakpoints = 200;  // cap breakpoints listed (a single source bp can bind to many)
+    private const int EvalTimeoutMs = 5000;  // expression-evaluation timeout (GetExpression)
 
     /// <summary>Read a debug-state snapshot. Must be called on the UI thread.</summary>
     public static JObject ReadSnapshot()
@@ -79,27 +81,205 @@ internal static class DebuggerReader
         }
         catch (Exception e) { Log(snap, $"callStack unavailable: {e.Message}"); }
 
-        // Arguments + locals for the current frame. EnvDTE's Locals collection ALSO includes the method
-        // parameters, so read args first and exclude their names from locals to avoid duplicates.
+        // Arguments + locals for the current frame.
         try
         {
             var frame = dbg.CurrentStackFrame;
-            if (frame != null)
-            {
-                var args = ReadExpressions(frame.Arguments);
-                snap["args"] = args;
-
-                var argNames = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var a in args)
-                    argNames.Add((string?)a["name"] ?? "");
-
-                snap["locals"] = ReadExpressions(frame.Locals, argNames);
-            }
+            if (frame != null) AddArgsLocals(snap, frame);
         }
         catch (Exception e) { Log(snap, $"locals unavailable: {e.Message}"); }
 
         return snap;
     }
+
+    /// <summary>
+    /// Pull on demand: args + locals for a specific call-stack frame (0 = innermost/current). Lets the
+    /// model walk up the stack to inspect callers without the user touching the debugger. Break-mode only.
+    /// </summary>
+    public static JObject ReadFrameLocals(int frameIndex)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var dbg = (ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE)?.Debugger;
+        if (dbg == null) return Mode("unknown");
+        if (!TryBreakMode(dbg, out var notBreak)) return notBreak;
+
+        var result = Mode("break");
+        result["frameIndex"] = frameIndex;
+        try
+        {
+            var target = FrameAt(dbg, frameIndex);
+            if (target == null) { result["error"] = $"no frame at index {frameIndex}"; return result; }
+            result["function"] = SafeFunction(target);
+            AddArgsLocals(result, target);
+        }
+        catch (Exception e) { result["error"] = e.Message; }
+        return result;
+    }
+
+    /// <summary>
+    /// Pull on demand: evaluate an arbitrary expression in the context of a chosen frame (0 = current).
+    /// Read-only inspection (the model can probe values mid-investigation). Break-mode only. Note that
+    /// expressions with side effects (method calls) DO execute - EnvDTE has no read-only eval flag.
+    /// </summary>
+    public static JObject Evaluate(string expression, int frameIndex)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var dbg = (ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE)?.Debugger;
+        if (dbg == null) return Mode("unknown");
+        if (!TryBreakMode(dbg, out var notBreak)) return notBreak;
+        if (string.IsNullOrWhiteSpace(expression))
+            return new JObject { ["mode"] = "break", ["error"] = "empty expression" };
+
+        StackFrame? prev = null;
+        bool switched = false;
+        try
+        {
+            // GetExpression evaluates relative to dbg.CurrentStackFrame, so temporarily retarget it when
+            // a non-current frame is requested, then restore so the user's debugger UI is undisturbed.
+            if (frameIndex > 0)
+            {
+                var target = FrameAt(dbg, frameIndex);
+                if (target != null)
+                {
+                    prev = dbg.CurrentStackFrame;
+                    dbg.CurrentStackFrame = target;
+                    switched = true;
+                }
+            }
+
+            var ex = dbg.GetExpression(expression, true, EvalTimeoutMs);
+            // Read each member into a local with its own guard (EnvDTE throws readily on invalid exprs).
+            bool isValid = false; string type = "", value = "";
+            try { isValid = ex.IsValidValue; } catch { }
+            try { type = ex.Type ?? ""; } catch { }
+            try { value = ex.Value ?? ""; } catch { }
+            return new JObject
+            {
+                ["mode"] = "break",
+                ["expression"] = expression,
+                ["frameIndex"] = frameIndex,
+                ["isValid"] = isValid,
+                ["type"] = type,
+                ["value"] = Truncate(value),
+            };
+        }
+        catch (Exception e)
+        {
+            return new JObject { ["mode"] = "break", ["expression"] = expression, ["error"] = e.Message };
+        }
+        finally
+        {
+            if (switched && prev != null) { try { dbg.CurrentStackFrame = prev; } catch { } }
+        }
+    }
+
+    /// <summary>
+    /// List all breakpoints (file/line/function/enabled/hit-count/condition). Unlike the others this works
+    /// in ANY mode - breakpoints exist before a run, so the model can see where execution will stop.
+    /// </summary>
+    public static JObject ReadBreakpoints()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var result = new JObject { ["mode"] = "unknown", ["breakpoints"] = new JArray() };
+        var dbg = (ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE)?.Debugger;
+        if (dbg == null) return result;
+        result["mode"] = ModeString(dbg);
+
+        try
+        {
+            var arr = (JArray)result["breakpoints"]!;
+            var col = dbg.Breakpoints;
+            if (col == null) return result;
+            int n = 0;
+            foreach (Breakpoint bp in col)
+            {
+                if (n++ >= MaxBreakpoints) break;
+                // Per-property guards: a file breakpoint throws on FunctionName and vice-versa.
+                string file = "", function = "", condition = "";
+                int line = 0, hits = 0; bool enabled = false;
+                try { file = bp.File ?? ""; } catch { }
+                try { line = bp.FileLine; } catch { }
+                try { function = bp.FunctionName ?? ""; } catch { }
+                try { enabled = bp.Enabled; } catch { }
+                try { hits = bp.CurrentHits; } catch { }
+                try { condition = bp.Condition ?? ""; } catch { }
+
+                var o = new JObject
+                {
+                    ["file"] = file,
+                    ["line"] = line,
+                    ["function"] = function,
+                    ["enabled"] = enabled,
+                    ["hitCount"] = hits,
+                };
+                if (!string.IsNullOrEmpty(condition)) o["condition"] = condition;
+                arr.Add(o);
+            }
+        }
+        catch (Exception e) { result["error"] = e.Message; }
+        return result;
+    }
+
+    /// <summary>Read a frame's args + locals into <paramref name="into"/>, deduping params out of locals.</summary>
+    private static void AddArgsLocals(JObject into, StackFrame frame)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        // EnvDTE's Locals collection ALSO includes the method parameters, so read args first and exclude
+        // their names from locals to avoid duplicates.
+        var args = ReadExpressions(frame.Arguments);
+        into["args"] = args;
+
+        var argNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var a in args)
+            argNames.Add((string?)a["name"] ?? "");
+
+        into["locals"] = ReadExpressions(frame.Locals, argNames);
+    }
+
+    /// <summary>The StackFrame at <paramref name="index"/> (0 = innermost), or null if out of range.</summary>
+    private static StackFrame? FrameAt(Debugger dbg, int index)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var thread = dbg.CurrentThread;
+        if (thread == null || index < 0) return null;
+        int n = 0;
+        foreach (StackFrame f in thread.StackFrames)
+            if (n++ == index) return f;
+        return null;
+    }
+
+    /// <summary>True when stopped at a breakpoint. Otherwise <paramref name="notBreak"/> carries the mode payload.</summary>
+    private static bool TryBreakMode(Debugger dbg, out JObject notBreak)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread(); // EnvDTE Debugger access is main-thread only
+        notBreak = Mode("unknown");
+        dbgDebugMode mode;
+        try { mode = dbg.CurrentMode; } catch { return false; }
+        if (mode == dbgDebugMode.dbgBreakMode) return true;
+        notBreak = Mode(mode == dbgDebugMode.dbgRunMode ? "run" : "design");
+        return false;
+    }
+
+    private static string ModeString(Debugger dbg)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread(); // EnvDTE Debugger access is main-thread only
+        try
+        {
+            return dbg.CurrentMode switch
+            {
+                dbgDebugMode.dbgBreakMode => "break",
+                dbgDebugMode.dbgRunMode => "run",
+                dbgDebugMode.dbgDesignMode => "design",
+                _ => "unknown",
+            };
+        }
+        catch { return "unknown"; }
+    }
+
+    private static string Truncate(string v) => v.Length > MaxValueLen ? v.Substring(0, MaxValueLen) + "…" : v;
 
     private static JArray ReadExpressions(Expressions exprs, HashSet<string>? exclude = null)
     {

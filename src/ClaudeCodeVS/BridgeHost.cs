@@ -90,6 +90,13 @@ internal sealed class BridgeHost : IDisposable
         // debugger (break location, call stack, locals) and hand it back to be injected into context.
         _server.DebugContextHandler = GetDebugContextAsync;
 
+        // Debug PULL channel (Phase 2): a SECOND MCP server with its own registry of vs_* debug tools,
+        // served at POST /mcp. The CLI reaches it through the stdio shim that McpInstaller registers in
+        // .mcp.json - so the model can fetch live runtime state on demand mid-turn, not just at
+        // prompt-submit. Distinct from the IDE-protocol MCP on the WebSocket above (whose tools stay
+        // dormant); reuses the same McpServer dispatch over a different tool set.
+        _server.DebugMcp = new McpServer(new ToolRegistry(BuildDebugTools()));
+
         // Run the accept loop in the background. If it ever faults (not a normal shutdown), delete the
         // lockfile so we don't keep advertising a dead bridge that blocks reconnection (issue #5043).
         _ = Task.Run(async () =>
@@ -233,6 +240,19 @@ internal sealed class BridgeHost : IDisposable
             yield return stub;
     }
 
+    /// <summary>
+    /// The Phase 2 debug PULL tools, served on the secondary /mcp surface (NOT the IDE WebSocket). Kept
+    /// in a separate registry so they're real, callable MCP tools the CLI surfaces to the model - unlike
+    /// the IDE-protocol tools above, which the CLI advertises but keeps dormant.
+    /// </summary>
+    private static IEnumerable<IIdeTool> BuildDebugTools()
+    {
+        yield return new VsDebugStateTool();
+        yield return new VsListBreakpointsTool();
+        yield return new VsGetFrameLocalsTool();
+        yield return new VsEvaluateTool();
+    }
+
     /// <summary>Best-effort workspace root for the lockfile: the open solution's directory, else none.</summary>
     private async Task<IReadOnlyList<string>> GetWorkspaceFoldersAsync()
     {
@@ -282,8 +302,12 @@ internal sealed class BridgeHost : IDisposable
 
         // Auto-install the single-gate PreToolUse hook into the workspace so accepting/rejecting our
         // diff is the sole edit gate (no terminal prompt). Best-effort; idempotent; safe to re-run.
+        // Also register the debug PULL MCP server (.mcp.json + stdio shim) for Phase 2 pull-on-demand.
         if (!string.IsNullOrEmpty(workspace))
+        {
             Hooks.PermissionHookInstaller.EnsureInstalled(workspace!);
+            Hooks.McpInstaller.EnsureInstalled(workspace!);
+        }
 
         // Launch in DEFAULT permission mode. We tried --permission-mode acceptEdits to drop the CLI's
         // terminal edit-prompt, but verified it makes the CLI auto-apply edits and NOT call openDiff at
