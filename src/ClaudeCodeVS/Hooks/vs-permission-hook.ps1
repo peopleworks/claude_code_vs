@@ -43,17 +43,31 @@ try {
         default     { Emit 'allow' "unhandled tool $tool" }
     }
 
-    # Find the Visual Studio bridge lockfile (prefer one whose workspace contains this cwd).
+    # Find the Visual Studio bridge: the MOST-SPECIFIC workspace match (longest workspaceFolders prefix
+    # of this cwd) whose port is actually listening. Avoids two failure modes: a parent-folder instance
+    # (e.g. the repo root) shadowing a subfolder, and a stale "zombie" lockfile (dead instance, recycled
+    # PID) whose port no longer answers.
+    function Test-Port([int]$pt) {
+        try {
+            $c = New-Object System.Net.Sockets.TcpClient
+            $live = $c.BeginConnect('127.0.0.1', $pt, $null, $null).AsyncWaitHandle.WaitOne(300) -and $c.Connected
+            $c.Close(); return $live
+        } catch { return $false }
+    }
     $ideDir = Join-Path $env:USERPROFILE '.claude\ide'
-    $port = $null; $token = $null
+    $cands = @()
     foreach ($f in Get-ChildItem $ideDir -Filter *.lock -ErrorAction SilentlyContinue) {
         try {
             $j = Get-Content -Raw $f.FullName | ConvertFrom-Json
-            if ($j.ideName -eq 'Visual Studio') {
-                $port = [int]$f.BaseName; $token = $j.authToken
-                if ($j.workspaceFolders -and $p.cwd -and ($p.cwd -like ($j.workspaceFolders[0] + '*'))) { break }
-            }
+            if ($j.ideName -ne 'Visual Studio') { continue }
+            $ws = if ($j.workspaceFolders) { [string]$j.workspaceFolders[0] } else { '' }
+            $match = [bool]($ws -and $p.cwd -and ($p.cwd -like ($ws + '*')))
+            $cands += [pscustomobject]@{ Port = [int]$f.BaseName; Token = $j.authToken; Score = (([int]$match) * 1000000 + $ws.Length) }
         } catch { }
+    }
+    $port = $null; $token = $null
+    foreach ($cand in ($cands | Sort-Object Score -Descending)) {
+        if (Test-Port $cand.Port) { $port = $cand.Port; $token = $cand.Token; break }
     }
     if (-not $port) { Emit 'allow' 'no Visual Studio bridge lockfile found' }
 

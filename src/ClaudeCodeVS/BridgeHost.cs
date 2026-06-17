@@ -62,14 +62,33 @@ internal sealed class BridgeHost : IDisposable
         // Let the selection tracker push selection_changed over this server.
         Editor.SelectionService.Attach(_server, ThreadHelper.JoinableTaskFactory);
 
-        // Reflect CLI connect/disconnect in the dockable panel.
-        _server.ConnectionChanged += connected => Ui.BridgeStatus.SetConnected(connected);
+        // Reflect CLI connect/disconnect in the dockable panel. On a FULL disconnect (no clients left),
+        // reject + close any orphaned diffs: their openDiff/permission caller is gone, so the parked
+        // decision would never be delivered and the diff frame + InfoBar would linger. We deliberately
+        // do NOT touch the lockfile - the server is still listening and the CLI needs the lockfile
+        // (port + auth token) to reconnect.
+        _server.ConnectionChanged += connected =>
+        {
+            Ui.BridgeStatus.SetConnected(connected);
+            if (connected) return;
+#pragma warning disable VSSDK007
+            ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+            {
+                try { await Diff.DiffRegistry.CloseAllAsync(); }
+                catch (Exception e) { Log.Warn($"orphan diff cleanup on disconnect failed: {e.Message}"); }
+            }).FileAndForget("claudecodevs/disconnectCleanup");
+#pragma warning restore VSSDK007
+        };
 
         // Single-gate: the PreToolUse hook POSTs to /permission, which routes here to show the diff.
         _server.PermissionHandler = ShowPermissionDiffAsync;
 
         // Stats: the Stop hook POSTs the transcript path to /usage; we parse it for tokens/cost.
         _server.UsageHandler = UsageTracker.UpdateFromTranscriptAsync;
+
+        // Debug awareness: the UserPromptSubmit hook POSTs to /debug-context; we read the live VS
+        // debugger (break location, call stack, locals) and hand it back to be injected into context.
+        _server.DebugContextHandler = GetDebugContextAsync;
 
         // Run the accept loop in the background. If it ever faults (not a normal shutdown), delete the
         // lockfile so we don't keep advertising a dead bridge that blocks reconnection (issue #5043).
@@ -158,6 +177,42 @@ internal sealed class BridgeHost : IDisposable
 #pragma warning restore VSSDK007
     }
 
+    /// <summary>
+    /// Read the current VS debugger state for the UserPromptSubmit hook to inject into Claude's context.
+    /// Hops to the UI thread (EnvDTE is UI-thread bound). Returns a compact JSON snapshot; on any failure
+    /// returns {"mode":"unknown"} so the hook simply injects nothing (fail-open, never blocks the turn).
+    /// </summary>
+    private async Task<string> GetDebugContextAsync(CancellationToken ct)
+    {
+        try
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+            // Fully qualified: `using System.Diagnostics` is in scope here, so a bare `Debugging` could
+            // be misread - and `Debug` would collide with System.Diagnostics.Debug outright.
+            var snap = ClaudeCodeVs.Debugging.DebuggerReader.ReadSnapshot();
+            var mode = (string?)snap["mode"];
+            if (mode == "break")
+            {
+                var fn = (string?)snap["stoppedAt"]?["function"] ?? "?";
+                int frames = (snap["callStack"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                int args = (snap["args"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                int locals = (snap["locals"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                Log.Info($"debug-context: break at {fn} ({frames} frame(s), {args} arg(s), {locals} local(s)) -> injecting");
+            }
+            else
+            {
+                // Not paused -> the hook injects nothing. Event level so normal (non-debug) turns stay quiet.
+                Log.Event($"debug-context: mode={mode} (not paused; nothing injected)");
+            }
+            return snap.ToString(Newtonsoft.Json.Formatting.None);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"debug-context read failed: {e.Message}");
+            return "{\"mode\":\"unknown\"}";
+        }
+    }
+
     private static IEnumerable<IIdeTool> BuildTools(DiffDecisions decisions)
     {
         yield return new OpenFileTool();
@@ -218,6 +273,10 @@ internal sealed class BridgeHost : IDisposable
             Log.Warn("Launch Claude Code: bridge isn't running yet.");
             return;
         }
+
+        // Reap zombie lockfiles (dead/recycled-PID instances) before launching, so the CLI's /ide and
+        // our hooks see only live bridges. Our own lockfile is alive, so it's never reaped.
+        Lockfile.ReapStale();
 
         string? workspace = await GetWorkspaceRootAsync();
 

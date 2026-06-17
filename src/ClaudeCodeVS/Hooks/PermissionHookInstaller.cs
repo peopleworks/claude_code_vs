@@ -13,13 +13,16 @@ namespace ClaudeCodeVs.Hooks;
 /// the Launch command. Best-effort - never throws into the launch path.
 /// - PreToolUse (Edit|Write|MultiEdit) -> the single-gate permission hook (our diff is the edit gate).
 /// - Stop -> the usage hook (reports the transcript path so the panel can show token/cost stats).
+/// - UserPromptSubmit -> the debug-context hook (injects live break state so Claude debugs smarter).
 /// </summary>
 internal static class PermissionHookInstaller
 {
     private const string PermissionScript = "vs-permission-hook.ps1";
     private const string UsageScript = "vs-usage-hook.ps1";
+    private const string DebugScript = "vs-debug-context-hook.ps1";
     private const int PermissionTimeoutSeconds = 86400; // 24h, so the diff can wait for an unattended user
     private const int UsageTimeoutSeconds = 10;
+    private const int DebugTimeoutSeconds = 10;
 
     private static string Command(string script) =>
         $"powershell -NoProfile -ExecutionPolicy Bypass -File .claude/{script}";
@@ -34,6 +37,7 @@ internal static class PermissionHookInstaller
             // 1) (Over)write the hook scripts from the embedded copies, so updates ship with the extension.
             File.WriteAllText(Path.Combine(claudeDir, PermissionScript), ReadEmbeddedScript(PermissionScript));
             File.WriteAllText(Path.Combine(claudeDir, UsageScript), ReadEmbeddedScript(UsageScript));
+            File.WriteAllText(Path.Combine(claudeDir, DebugScript), ReadEmbeddedScript(DebugScript));
 
             // 2) Merge hook entries into .claude/settings.json, preserving any existing content.
             var settingsPath = Path.Combine(claudeDir, "settings.json");
@@ -57,15 +61,16 @@ internal static class PermissionHookInstaller
 
             bool addedPre = EnsureHook(hooks, "PreToolUse", "Edit|Write|MultiEdit", PermissionScript, PermissionTimeoutSeconds);
             bool addedStop = EnsureHook(hooks, "Stop", matcher: null, UsageScript, UsageTimeoutSeconds);
+            bool addedDebug = EnsureHook(hooks, "UserPromptSubmit", matcher: null, DebugScript, DebugTimeoutSeconds);
 
-            if (!addedPre && !addedStop)
+            if (!addedPre && !addedStop && !addedDebug)
             {
-                Log.Info("hooks: PreToolUse + Stop already present; nothing to change");
+                Log.Info("hooks: PreToolUse + Stop + UserPromptSubmit already present; nothing to change");
                 return;
             }
 
             File.WriteAllText(settingsPath, root.ToString(Formatting.Indented));
-            Log.Info($"hooks: updated {settingsPath} (PreToolUse {(addedPre ? "ADDED" : "present")}, Stop {(addedStop ? "ADDED" : "present")})");
+            Log.Info($"hooks: updated {settingsPath} (PreToolUse {(addedPre ? "ADDED" : "present")}, Stop {(addedStop ? "ADDED" : "present")}, UserPromptSubmit {(addedDebug ? "ADDED" : "present")})");
         }
         catch (Exception e)
         {

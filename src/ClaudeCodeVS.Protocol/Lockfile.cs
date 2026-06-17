@@ -46,9 +46,11 @@ public sealed class Lockfile
         var token = Guid.NewGuid().ToString();
         var path = System.IO.Path.Combine(IdeDir, $"{port}.lock");
 
+        var self = Process.GetCurrentProcess();
         var doc = new LockfileDoc
         {
-            Pid = Process.GetCurrentProcess().Id,
+            Pid = self.Id,
+            PidStartTime = SafeStartTime(self),
             WorkspaceFolders = workspaceFolders.ToArray(),
             IdeName = "Visual Studio",
             Transport = "ws",
@@ -113,10 +115,10 @@ public sealed class Lockfile
                 var doc = JsonConvert.DeserializeObject<LockfileDoc>(File.ReadAllText(file));
                 if (doc is null) continue;
 
-                if (!IsProcessAlive(doc.Pid))
+                if (!IsOwnerAlive(doc.Pid, doc.PidStartTime))
                 {
                     File.Delete(file);
-                    Log.Info($"reaped stale lockfile {System.IO.Path.GetFileName(file)} (dead pid {doc.Pid})");
+                    Log.Info($"reaped stale lockfile {System.IO.Path.GetFileName(file)} (dead/recycled pid {doc.Pid})");
                 }
             }
             catch (Exception e)
@@ -126,19 +128,34 @@ public sealed class Lockfile
         }
     }
 
-    private static bool IsProcessAlive(int pid)
+    /// <summary>
+    /// True if the lockfile's owning VS process is still alive. Beyond a bare PID check, when the
+    /// lockfile records a start time we verify the live PID's start time matches - so a recycled PID
+    /// (Windows reuses the PIDs of dead processes) is correctly treated as dead rather than a false
+    /// "alive". If the start time can't be read (e.g. access denied -> not our same-user devenv), we
+    /// keep the lockfile rather than risk reaping a live instance; the hooks' live-port probe skips it.
+    /// </summary>
+    private static bool IsOwnerAlive(int pid, long startTimeFileTimeUtc)
     {
         if (pid <= 0) return false;
         try
         {
-            // Throws ArgumentException if no such process.
-            using var _ = Process.GetProcessById(pid);
-            return true;
+            using var proc = Process.GetProcessById(pid); // throws ArgumentException if no such process
+            if (startTimeFileTimeUtc == 0) return true;   // legacy lockfile without identity -> PID-only
+            try { return proc.StartTime.ToFileTimeUtc() == startTimeFileTimeUtc; }
+            catch { return true; }                        // can't introspect -> don't risk a false reap
         }
         catch (ArgumentException)
         {
-            return false;
+            return false; // no process with this PID -> definitely dead
         }
+    }
+
+    /// <summary>Owning process start time as a UTC file-time, or 0 if unavailable.</summary>
+    private static long SafeStartTime(Process proc)
+    {
+        try { return proc.StartTime.ToFileTimeUtc(); }
+        catch { return 0; }
     }
 
     private static int PickFreePort()
@@ -159,6 +176,9 @@ public sealed class Lockfile
     private sealed class LockfileDoc
     {
         [JsonProperty("pid")] public int Pid { get; set; }
+        // Extension-only (the CLI ignores unknown fields): the owning process's start time, paired with
+        // Pid to defeat PID reuse when reaping stale lockfiles.
+        [JsonProperty("pidStartTime")] public long PidStartTime { get; set; }
         [JsonProperty("workspaceFolders")] public string[] WorkspaceFolders { get; set; } = Array.Empty<string>();
         [JsonProperty("ideName")] public string IdeName { get; set; } = "Visual Studio";
         [JsonProperty("transport")] public string Transport { get; set; } = "ws";

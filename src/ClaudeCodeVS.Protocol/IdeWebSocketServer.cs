@@ -42,6 +42,14 @@ public sealed class IdeWebSocketServer
     /// </summary>
     public Func<string, CancellationToken, Task>? UsageHandler { get; set; }
 
+    /// <summary>
+    /// Handles a POST /debug-context request from the UserPromptSubmit hook: read the current VS
+    /// debugger state (break location, call stack, locals) and return it as JSON for the hook to inject
+    /// into Claude's context. Set by the VSIX; null returns "unknown". This is how debug awareness
+    /// reaches the model WITHOUT a tool call or an edit - the hook pushes it in at prompt-submit time.
+    /// </summary>
+    public Func<CancellationToken, Task<string>>? DebugContextHandler { get; set; }
+
     public IdeWebSocketServer(int port, string authToken, McpServer mcp)
     {
         _port = port;
@@ -106,6 +114,12 @@ public sealed class IdeWebSocketServer
                 && ctx.Request.Url?.AbsolutePath == "/usage")
             {
                 await HandleUsageRequestAsync(ctx, ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/debug-context")
+            {
+                await HandleDebugContextRequestAsync(ctx, ct);
                 return;
             }
             ctx.Response.StatusCode = 400;
@@ -216,6 +230,37 @@ public sealed class IdeWebSocketServer
             Log.Warn($"usage request failed: {e.Message}");
         }
         try { ctx.Response.StatusCode = 200; ctx.Response.Close(); } catch { /* client gave up */ }
+    }
+
+    private async Task HandleDebugContextRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        string json = "{\"mode\":\"unknown\"}"; // fail-safe: the hook injects nothing on "unknown"
+        try
+        {
+            // The body (cwd) is currently unused - the bridge reads its own VS instance's debugger -
+            // but drain the stream so the request completes cleanly.
+            using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                await reader.ReadToEndAsync();
+
+            var handler = DebugContextHandler;
+            if (handler != null)
+                json = await handler(ct) ?? json;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"debug-context request failed: {e.Message}");
+        }
+
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "application/json";
+            ctx.Response.ContentLength64 = bytes.Length;
+            await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+            ctx.Response.Close();
+        }
+        catch { /* client gave up */ }
     }
 
     private async Task ReceiveLoopAsync(Connection conn, CancellationToken ct)

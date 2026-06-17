@@ -47,9 +47,11 @@ If you ever find yourself adding an LLM API call, an agent loop, or a tool the C
 
 Lockfile `~/.claude/ide/<port>.lock` (filename == port):
 ```json
-{ "pid": 0, "workspaceFolders": ["..."], "ideName": "Visual Studio",
+{ "pid": 0, "pidStartTime": 0, "workspaceFolders": ["..."], "ideName": "Visual Studio",
   "transport": "ws", "runningInWindows": true, "authToken": "<uuid>" }
 ```
+`pidStartTime` is extension-only (the CLI ignores unknown fields): paired with `pid` so a recycled PID can't make a dead lockfile look alive. Hooks pick the **most-specific** workspace match whose port is **listening** (defeats parent-folder shadowing + zombie lockfiles).
+
 Env before launching CLI: `CLAUDE_CODE_SSE_PORT=<port>`, `ENABLE_IDE_INTEGRATION=true`.
 Full schema + all 12 tool definitions: see `src/ClaudeCodeVS/Tools/` and the Tool status section below.
 
