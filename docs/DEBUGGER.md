@@ -6,6 +6,46 @@ The `claude` CLI does all the agent work; the extension exposes Visual Studio's 
 
 ---
 
+## See it in action: ComboScore
+
+A real run against the [`demo/ComboScore`](../demo/ComboScore) fixture — a scoring routine whose bug is **invisible in the final output** (you just see a wrong total). A *fresh* `claude` session, with no idea what the bug was, drove the Visual Studio debugger to find it in about 1m 37s.
+
+**The prompt:**
+
+> hi, my comboscorer is partially correct. can you use the debugger and check whats tripping up?
+
+**What it did** — read the source, loaded the `vs-debug` tools, then *drove*:
+
+- Set a breakpoint at the top of the loop and **started the session** (`vs_start_debugging`).
+- Stepped round-by-round, **watching `combo`** — and saw it *stay at 2* across the zero round at index 2 instead of resetting.
+- Ran to the `return`, confirming `total = 61` (expected `25`), then stopped the session.
+
+![Claude driving the debugger, step by step](images/combo-session.png)
+
+It built this trace for the input `{5, 3, 0, 4, 2, 0, 6}`:
+
+| round | points | combo (after) | total | should be |
+|---|---|---|---|---|
+| 0 | 5 | 1 | 5 | 5 |
+| 1 | 3 | 2 | 11 | 11 |
+| 2 | 0 | **2 ← stays!** | 11 | 11 |
+| 3 | 4 | 3 | 23 | **15** (4×1) |
+| 4 | 2 | 4 | 31 | **19** |
+| 5 | 0 | **4 ← stays!** | 31 | 19 |
+| 6 | 6 | 5 | **61** | **25** |
+
+![The runtime trace Claude built while stepping](images/combo-trace.png)
+
+**The diagnosis** — it caught the combo multiplier *failing to reset* on a zero round and proposed the fix:
+
+> A **zero round doesn't reset the combo**. `if (points > 0)` and `else if (points < 0)` both miss `points == 0`, so a zero round falls through and the streak carries across it — inflating the score to 61 instead of 25. Reset the combo on a non-positive round.
+
+![The bug and the proposed fix](images/combo-fix.png)
+
+Nothing in the source *reads* as wrong — the flaw only surfaces when you watch `combo` stay at 2 across the zero at round 2. That's the difference between reading code and debugging it.
+
+---
+
 ## How it reaches the model: three channels
 
 A new IDE tool wouldn't help here. Claude Code's IDE-integration protocol (the WebSocket the CLI connects to) is **CLI-curated** — it surfaces only `getDiagnostics` (+ `executeCode`) to the model and drives the rest itself, so a 13th tool added there would never be called. Debug state therefore reaches the model through the two channels that *do*: a **hook** (push) and a **user MCP server** (pull). Driving rides the same MCP server behind a safety gate.
