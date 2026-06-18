@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Test fixture for break-on-thrown (vs_break_on_exception). Compiles and RUNS: one order has a null
+       Customer, so QuoteFor throws a NullReferenceException deep in the call chain - but a generic catch
+       in Main swallows it into "Order 103: skipped (NullReferenceException)", hiding WHERE/WHY it threw.
+       The point isn't a hard bug; it's to show that breaking on first-chance NullReferenceException lands
+       you at the THROW site (Pricing.QuoteFor, with the offending order in scope), not at the catch.
+       Open in VS, enable "Allow Claude to drive debugger", and ask Claude to break on the exception and
+       find its origin. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

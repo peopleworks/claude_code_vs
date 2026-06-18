@@ -79,7 +79,8 @@ internal static class DebuggerReader
                 int n = 0;
                 foreach (StackFrame f in thread.StackFrames)
                 {
-                    if (n++ >= MaxFrames) break;
+                    if (n >= MaxFrames) { frames.Add(TruncMarker($"capped at {MaxFrames} frames; deeper frames omitted")); break; }
+                    n++;
                     frames.Add(new JObject { ["function"] = SafeFunction(f) });
                 }
             }
@@ -202,7 +203,8 @@ internal static class DebuggerReader
             int n = 0;
             foreach (Breakpoint bp in col)
             {
-                if (n++ >= MaxBreakpoints) break;
+                if (n >= MaxBreakpoints) { arr.Add(TruncMarker($"capped at {MaxBreakpoints} breakpoints")); break; }
+                n++;
                 // Per-property guards: a file breakpoint throws on FunctionName and vice-versa.
                 string file = "", function = "", condition = "";
                 int line = 0, hits = 0; bool enabled = false;
@@ -297,7 +299,7 @@ internal static class DebuggerReader
         {
             if (n++ >= MaxExpandChildren)
             {
-                kids.Add(new JObject { ["name"] = "…", ["value"] = $"({count - MaxExpandChildren} more members)" });
+                kids.Add(new JObject { ["name"] = "…", ["truncated"] = true, ["value"] = $"{count - MaxExpandChildren} more members not shown" });
                 break;
             }
             kids.Add(ExpandExpression(child, depth - 1));
@@ -332,7 +334,8 @@ internal static class DebuggerReader
             int tn = 0;
             foreach (EnvDTE.Thread th in program.Threads)
             {
-                if (tn++ >= MaxThreads) break;
+                if (tn >= MaxThreads) { arr.Add(TruncMarker($"capped at {MaxThreads} threads")); break; }
+                tn++;
                 var o = new JObject();
                 int id = -1;
                 try { id = th.ID; } catch { }
@@ -347,7 +350,8 @@ internal static class DebuggerReader
                     int fn = 0;
                     foreach (StackFrame f in th.StackFrames)
                     {
-                        if (fn++ >= MaxThreadFrames) break;
+                        if (fn >= MaxThreadFrames) { frames.Add($"… capped at {MaxThreadFrames} frames"); break; }
+                        fn++;
                         frames.Add(SafeFunction(f));
                     }
                 }
@@ -418,6 +422,9 @@ internal static class DebuggerReader
 
     private static string Truncate(string v) => v.Length > MaxValueLen ? v.Substring(0, MaxValueLen) + "…" : v;
 
+    /// <summary>A list element marking where a cap truncated output, so the model knows data was cut (not "all of it").</summary>
+    private static JObject TruncMarker(string note) => new JObject { ["truncated"] = true, ["note"] = note };
+
     /// <summary>
     /// Compact "name=value, …" rendering of a snapshot's args + locals, for a single log line - so the
     /// Output pane shows the runtime values the model is reasoning over, not just the stop location.
@@ -432,6 +439,7 @@ internal static class DebuggerReader
             foreach (var t in arr)
             {
                 if (t is not JObject e) continue;
+                if (e["truncated"] != null) continue; // skip truncation markers in the log summary
                 var name = (string?)e["name"] ?? "";
                 var val = (string?)e["value"] ?? "";
                 if (val.Length > MaxLogValueLen) val = val.Substring(0, MaxLogValueLen) + "…";
@@ -454,7 +462,8 @@ internal static class DebuggerReader
             string name = "";
             try { name = e.Name ?? ""; } catch { }
             if (exclude != null && exclude.Contains(name)) continue; // drop dupes (params show up in Locals too)
-            if (n++ >= MaxLocals) break;
+            if (n >= MaxLocals) { arr.Add(TruncMarker($"capped at {MaxLocals} variables; more not shown")); break; }
+            n++;
 
             string type = "", value = "";
             try { type = e.Type ?? ""; } catch { }

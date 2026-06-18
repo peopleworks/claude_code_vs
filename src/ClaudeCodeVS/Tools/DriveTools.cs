@@ -35,6 +35,7 @@ internal abstract class DriveToolBase : IIdeTool
         }
 
         var result = await RunAsync(args, ct);
+        Ui.BridgeStatus.RecordDebugDrive(); // session attribution (passed the gate -> a real drive action)
         Log.Info($"{Name} -> {Summarize(result)}");
         return result;
     }

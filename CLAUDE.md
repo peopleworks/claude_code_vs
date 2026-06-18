@@ -17,10 +17,11 @@ If you ever find yourself adding an LLM API call, an agent loop, or a tool the C
 ## Architecture (where things live)
 
 - `src/ClaudeCodeVS.Protocol/` - lockfile writer, WS server, MCP/JSON-RPC framing.
-- `src/ClaudeCodeVS/Tools/` - one `IIdeTool` per protocol tool (openDiff, openFile, getCurrentSelection, getDiagnostics, …).
+- `src/ClaudeCodeVS/Tools/` - one `IIdeTool` per tool: the 12 IDE-protocol tools (openDiff, openFile, getDiagnostics, …) plus the debugger surface - `DebugTools.cs` (reads) + `DriveTools.cs` (gated drive).
 - `src/ClaudeCodeVS/Diff/` - diff rendering + Accept/Reject InfoBar + write-back + tab registry.
 - `src/ClaudeCodeVS/Editor/` - selection service + TextViewListener MEF component + Error List reader + RDT helpers.
-- `src/ClaudeCodeVS/Hooks/` - hook installer + embedded `vs-permission-hook.ps1` + `vs-usage-hook.ps1`.
+- `src/ClaudeCodeVS/Debugging/` - `DebuggerReader` (EnvDTE reads: break state, stack, locals, threads, object-graph expansion) + `DebuggerDriver` (`IVsDebugger` drive: continue/step/breakpoints/session + the await-break engine).
+- `src/ClaudeCodeVS/Hooks/` - hook installer (`PermissionHookInstaller`) + `McpInstaller` (registers the `vs-debug` MCP server) + embedded scripts: `vs-permission-hook.ps1`, `vs-usage-hook.ps1`, `vs-debug-context-hook.ps1`, `vs-mcp-shim.ps1`.
 - `src/ClaudeCodeVS/Ui/` - dockable panel (BridgeStatus state, ClaudeToolWindowControl WPF, ReasonDialog).
 - `BridgeHost.cs` - wires everything together; owns the `/permission` handler and CLI launcher.
 - `spike/` - Phase 0 standalone console harness (net8.0), kept for protocol regression testing.
@@ -75,8 +76,18 @@ All 12 tools are implemented. The CLI exposes only `getDiagnostics` + `executeCo
 - [x] Phase 0 - spike: protocol verified end-to-end vs CLI 2.1.169
 - [x] Phase 1 - core 4 in VSIX
 - [x] Phase 2 - full 12-tool parity + single-gate hook + dockable panel
-- [ ] Phase 3 - VS 2022 backfill, Roslyn-precise ranges, reconnect hardening (see `ROADMAP.md`)
+- [ ] Phase 3 - VS 2022 backfill, Roslyn-precise ranges (reconnect/multi-window hardening ✅ shipped 1.2.0)
 - [ ] Phase 4 - embedded chat (deferred)
+
+## Debugger integration (1.2.0)
+
+Live debugger exposed to the model over the SAME bridge (full reference: `docs/DEBUGGER.md`). Three channels — needed because the IDE-protocol WS tools are CLI-curated (dormant), so you CAN'T add a model-callable tool there:
+
+- **Push** - `vs-debug-context-hook.ps1` (a `UserPromptSubmit` hook) POSTs to `/debug-context`; the bridge reads break state via EnvDTE and the hook injects it as `additionalContext`. Break-mode only.
+- **Pull** - a SECOND `McpServer` served at `POST /mcp` on the same `HttpListener`, reached by `vs-mcp-shim.ps1` (a stdio↔HTTP proxy auto-registered in the workspace `.mcp.json` as server `vs-debug`). The shim does the most-specific-listening-lockfile discovery; tool logic runs in-proc against EnvDTE. This is the OPEN plugin door (all tools surfaced), unlike the curated IDE channel.
+- **Drive** - execution control on the same `/mcp` server, gated behind `BridgeStatus.AllowDebuggerDrive` (panel toggle, default OFF, resets per session - mirrors auto-accept). Async "issue → await next break" via `IVsDebuggerEvents.OnModeChange` + a parked `TaskCompletionSource` (the openDiff deferred pattern); never blocks the UI thread.
+
+**17 tools** on `vs-debug` (6 read, ungated + 11 drive, gated) + the push hook. Reads: `vs_debug_state` / `vs_evaluate` / `vs_expand` / `vs_get_frame_locals` / `vs_list_breakpoints` / `vs_threads`. Drive: continue, step over/into/out, run_to_line, set/remove_breakpoint, freeze_thread, set_next_statement, start/stop_debugging. All EnvDTE access is on the UI thread (convention #1). Capped reads carry a `{truncated:true}` marker so the model knows data was cut. Fixtures: `demo/{CheckoutBuggy,SignalScan,ComboScore,NullOrigin}`. **Not yet:** break-on-thrown (needs COM `IDebugEngine2.SetException`), native tracepoints.
 
 ## Diagnostics
 

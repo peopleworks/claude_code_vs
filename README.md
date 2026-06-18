@@ -1,6 +1,6 @@
 # Claude Code for Visual Studio
 
-> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, and a live stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
+> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
 
 ![Demo](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/demo.gif)
 
@@ -18,6 +18,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 - **Reject with feedback** - reject an edit and tell Claude what to change; it reconsiders with your note.
 - **Run wild (auto-accept)** - a panel toggle to apply edits without opening the diff, for when you want to let it cook. Resets each session.
 - **Diagnostics sharing** - Claude reads Visual Studio's compiler errors/warnings (C# and C++) and fixes them.
+- **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state — call stack, variable values, threads — and, opt-in, can *drive* the debugger (continue, step, set breakpoints, start/stop a session) to corner a bug instead of guessing from source. Full reference: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 - **Selection context** - Claude automatically knows the file and lines you're looking at.
 - **Live panel** - a dockable *Claude Code* panel: connection status, edit decisions, and **token usage + estimated cost** (latest call vs cumulative session).
 
@@ -25,7 +26,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 
 - **Visual Studio 2026.**
 - **The Claude Code CLI**, installed and authenticated - see the [Claude Code docs](https://docs.claude.com/claude-code). *This extension makes no model calls and does no agent work itself; it requires the CLI.*
-- Tested against `claude` **2.1.173**.
+- Tested against `claude` **2.1.181**.
 
 ## Install
 
@@ -50,6 +51,8 @@ This is a **protocol bridge**, not a re-implementation of the agent. On launch t
 3. Implements the IDE tools the CLI drives - `openDiff`, `openFile`, `getDiagnostics`, selection updates, and diff-tab lifecycle.
 
 To make the **VS diff the single approval gate**, the extension installs a small **PreToolUse hook** into your workspace's `.claude/settings.json` that routes proposed edits through the diff. The CLI does all agent work; the extension never makes model calls.
+
+For **debugger access**, it adds a `UserPromptSubmit` hook (injects live break state when you're paused) and a second MCP server, `vs-debug`, reached through a tiny stdio shim auto-registered in your workspace `.mcp.json`. Reading runtime state is always allowed; *driving* execution is opt-in behind a panel toggle. Details: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
 ## Privacy & security
 

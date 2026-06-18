@@ -36,6 +36,7 @@ internal sealed class VsDebugStateTool : IIdeTool
         var fn = (string?)snap["stoppedAt"]?["function"];
         var vals = DebuggerReader.SummarizeValues(snap);
         Log.Info($"vs_debug_state -> mode={(string?)snap["mode"]}{(fn != null ? $" @ {fn}" : "")}{(vals.Length > 0 ? $" · {vals}" : "")}");
+        Ui.BridgeStatus.RecordDebugInspect();
         return snap;
     }
 }
@@ -57,6 +58,7 @@ internal sealed class VsListBreakpointsTool : IIdeTool
         var result = DebuggerReader.ReadBreakpoints();
         int count = (result["breakpoints"] as JArray)?.Count ?? 0;
         Log.Info($"vs_list_breakpoints -> {count} breakpoint(s)");
+        Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }
 }
@@ -91,6 +93,7 @@ internal sealed class VsGetFrameLocalsTool : IIdeTool
         var fn = (string?)result["function"];
         var vals = DebuggerReader.SummarizeValues(result);
         Log.Info($"vs_get_frame_locals(frame={frameIndex}) -> mode={(string?)result["mode"]}{(fn != null ? $" @ {fn}" : "")}{(vals.Length > 0 ? $" · {vals}" : "")}");
+        Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }
 }
@@ -144,6 +147,7 @@ internal sealed class VsEvaluateTool : IIdeTool
             if (val.Length > 160) val = val.Substring(0, 160) + "…";
             Log.Info($"vs_evaluate('{expression}', frame={frameIndex}) -> valid={(bool?)result["isValid"]}, value={val}");
         }
+        Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }
 }
@@ -179,6 +183,7 @@ internal sealed class VsExpandTool : IIdeTool
         var result = DebuggerReader.Expand(expression, frameIndex, depth);
         int kids = (result["children"] as JArray)?.Count ?? 0;
         Log.Info($"vs_expand('{expression}', depth={depth}) -> {(string?)result["mode"]}, {kids} child(ren)");
+        Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }
 }
@@ -200,6 +205,7 @@ internal sealed class VsThreadsTool : IIdeTool
         var result = DebuggerReader.ReadThreads();
         int n = (result["threads"] as JArray)?.Count ?? 0;
         Log.Info($"vs_threads -> mode={(string?)result["mode"]}, {n} thread(s)");
+        Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }
 }
