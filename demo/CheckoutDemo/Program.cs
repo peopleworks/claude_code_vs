@@ -8,7 +8,7 @@ public static class Checkout
         items.Sum(i => i.Price * i.Quantity);
 
     // BUG (deliberate): the tax rate is typed as a string, so it can't be multiplied by a decimal.
-    // Roslyn flags GrandTotal below with CS0019. The clean fix is: decimal TaxRate = 0.08m;
+    // Roslyn flags GrandTotal below with CS0019.
     private static readonly string TaxRate = "0.08";
 
     public static decimal GrandTotal(IEnumerable<LineItem> items)

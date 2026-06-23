@@ -1,6 +1,6 @@
 # Roadmap
 
-Current release ships the core protocol bridge end-to-end: native diff with Accept/Reject, single-gate via PreToolUse hook, selection context, diagnostics (C# + C++), token/cost stats panel, and one-click Launch. Everything in this file is post-1.0 work.
+Current release ships the core protocol bridge end-to-end: native diff with Accept/Reject, single-gate via PreToolUse hook, selection context, diagnostics (C# + C++), token/cost stats panel, and one-click Launch. **1.2.0 adds live debugger integration** (push / pull / drive) — see [`docs/DEBUGGER.md`](docs/DEBUGGER.md). Everything below is remaining post-1.0 work.
 
 ---
 
@@ -18,9 +18,11 @@ Current release ships the core protocol bridge end-to-end: native diff with Acce
 
 ---
 
-### Reconnect + multi-window hardening
+### ✅ Reconnect + multi-window hardening — shipped in 1.2.0
 
-**What:** The bridge picks one free port at startup and writes one lockfile. Two failure modes exist today:
+Both failure modes below are now fixed: orphaned `openDiff` diffs are rejected and closed when the CLI disconnects (`DiffRegistry.CloseAllAsync` on `ConnectionChanged(false)`); the hooks pick the **most-specific** workspace lockfile whose port is actually **listening** (defeats parent-folder shadowing and zombie lockfiles), and lockfiles record `pidStartTime` so a recycled PID can't make a dead instance look alive. Original analysis kept for context:
+
+**What:** The bridge picks one free port at startup and writes one lockfile. Two failure modes existed:
 
 1. **CLI reconnect:** if the CLI disconnects (network hiccup, manual restart) and reconnects, the lockfile and server are still valid and the reconnect works - but any pending `openDiff` TCS entries are orphaned (the diff frame is still open with no live connection to answer it). The diff should be auto-rejected and closed on disconnect.
 
@@ -49,6 +51,18 @@ Current release ships the core protocol bridge end-to-end: native diff with Acce
 **What:** hosting the `claude` terminal/chat inside a VS tool window (Phase 3b in the original build plan). This would let the extension own stdin, enabling "Reject -> type reason inline" without a separate dialog, and eliminating the external console window.
 
 **Why it's deferred:** `dliedke/ClaudeCodeExtension` burned ~150 commits on paste/focus/encoding/resize trying this. The env-var handoff (the current model) is the clean separation - chat lives in an external console, diffs and context light up natively in VS.
+
+---
+
+## Debugger — next steps
+
+The 1.2.0 debugger surface (see [`docs/DEBUGGER.md`](docs/DEBUGGER.md)) has clear follow-ups, roughly in priority order:
+
+- **Break-on-thrown exceptions.** First-chance "break where this exception originates" (e.g. `System.NullReferenceException`) at the throw site, not the catch. The managed EnvDTE exception-settings API isn't present in the interop; this needs the lower-level COM `IDebugEngine2.SetException(EXCEPTION_INFO[])` path. The `demo/NullOrigin` fixture is staged to validate it.
+- **Test-driven debugging loop.** Run the test suite; on a failing test, set a breakpoint at the fault, `vs_start_debugging` that test, and drive to the failure — composing inspect + drive into an autonomous diagnose loop. The highest-leverage next feature.
+- **Native tracepoints.** Log-and-continue probes Claude can place without editing the file. EnvDTE doesn't expose the "when hit: log + continue" action, so this is either VS-native (if reachable) or simulated in our layer (breakpoint → capture expressions on hit → auto-continue).
+- **CPU / memory profiling.** Not the debugger subsystem — shell out to the .NET diagnostics CLIs against the debuggee PID: `dotnet-counters` (live CPU %, GC, alloc rate), `dotnet-trace` (top hot methods), `dotnet-gcdump` (top types by size). Surface parsed top-N results as tools.
+- **Per-frame source.** Precise file/line per call-stack frame via `IDebugStackFrame2.GetDocumentContext` (today the call stack is function names + the current-stop line only).
 
 ---
 

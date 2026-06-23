@@ -42,6 +42,24 @@ public sealed class IdeWebSocketServer
     /// </summary>
     public Func<string, CancellationToken, Task>? UsageHandler { get; set; }
 
+    /// <summary>
+    /// Handles a POST /debug-context request from the UserPromptSubmit hook: read the current VS
+    /// debugger state (break location, call stack, locals) and return it as JSON for the hook to inject
+    /// into Claude's context. Set by the VSIX; null returns "unknown". This is how debug awareness
+    /// reaches the model WITHOUT a tool call or an edit - the hook pushes it in at prompt-submit time.
+    /// </summary>
+    public Func<CancellationToken, Task<string>>? DebugContextHandler { get; set; }
+
+    /// <summary>
+    /// Secondary MCP surface for the Phase 2 debug PULL channel (POST /mcp). The CLI launches a tiny
+    /// stdio shim as a normal MCP server; the shim forwards each JSON-RPC message here over HTTP, so the
+    /// model can call vs_debug_state / vs_list_breakpoints / vs_get_frame_locals / vs_evaluate on demand.
+    /// This is a SEPARATE McpServer (its own tool registry) from the IDE-protocol one on the WebSocket -
+    /// the CLI keeps the WebSocket's tools dormant, but treats /mcp's tools as a real, callable server.
+    /// Null until the VSIX wires it; a request then returns an empty 200 (no tools).
+    /// </summary>
+    public McpServer? DebugMcp { get; set; }
+
     public IdeWebSocketServer(int port, string authToken, McpServer mcp)
     {
         _port = port;
@@ -106,6 +124,18 @@ public sealed class IdeWebSocketServer
                 && ctx.Request.Url?.AbsolutePath == "/usage")
             {
                 await HandleUsageRequestAsync(ctx, ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/debug-context")
+            {
+                await HandleDebugContextRequestAsync(ctx, ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/mcp")
+            {
+                await HandleMcpRequestAsync(ctx, ct);
                 return;
             }
             ctx.Response.StatusCode = 400;
@@ -216,6 +246,79 @@ public sealed class IdeWebSocketServer
             Log.Warn($"usage request failed: {e.Message}");
         }
         try { ctx.Response.StatusCode = 200; ctx.Response.Close(); } catch { /* client gave up */ }
+    }
+
+    private async Task HandleDebugContextRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        string json = "{\"mode\":\"unknown\"}"; // fail-safe: the hook injects nothing on "unknown"
+        try
+        {
+            // The body (cwd) is currently unused - the bridge reads its own VS instance's debugger -
+            // but drain the stream so the request completes cleanly.
+            using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                await reader.ReadToEndAsync();
+
+            var handler = DebugContextHandler;
+            if (handler != null)
+                json = await handler(ct) ?? json;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"debug-context request failed: {e.Message}");
+        }
+
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "application/json";
+            ctx.Response.ContentLength64 = bytes.Length;
+            await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+            ctx.Response.Close();
+        }
+        catch { /* client gave up */ }
+    }
+
+    /// <summary>
+    /// POST /mcp - the Phase 2 debug PULL surface. One JSON-RPC message in the body, one JSON-RPC message
+    /// back (or an empty 200 for notifications, where HandleAsync returns null). The stdio shim does the
+    /// newline framing; here it's one request per POST. Auth was already validated at the upgrade above.
+    /// </summary>
+    private async Task HandleMcpRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        string? response = null;
+        try
+        {
+            string body;
+            using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                body = await reader.ReadToEndAsync();
+
+            var mcp = DebugMcp;
+            if (mcp != null && body.Length > 0)
+                response = await mcp.HandleAsync(body, ct);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"/mcp request failed: {e.Message}");
+        }
+
+        try
+        {
+            ctx.Response.StatusCode = 200;
+            if (response is not null)
+            {
+                var bytes = Encoding.UTF8.GetBytes(response);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length, ct);
+            }
+            else
+            {
+                ctx.Response.ContentLength64 = 0; // notification / no reply due
+            }
+            ctx.Response.Close();
+        }
+        catch { /* client gave up */ }
     }
 
     private async Task ReceiveLoopAsync(Connection conn, CancellationToken ct)

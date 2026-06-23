@@ -37,11 +37,13 @@ internal sealed class ClaudeToolWindowControl : UserControl
     private readonly TextBlock _statusLine;
     private readonly TextBlock _endpointLine;
     private readonly TextBlock _editsLine;
+    private readonly TextBlock _debugLine;
     private readonly TextBlock _latestLine;
     private readonly TextBlock _sessionLine;
     private readonly Border _pendingCard;
     private readonly TextBlock _pendingText;
     private readonly CheckBox _autoAccept;
+    private readonly CheckBox _allowDrive;
     private readonly ListBox _feed;
     private readonly DispatcherTimer _timer;
     private readonly StackPanel _costRow;
@@ -96,12 +98,27 @@ internal sealed class ClaudeToolWindowControl : UserControl
         _autoAccept.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey); // else label is black-on-dark
         left.Children.Add(_autoAccept);
 
+        // Phase 3 gate: lets Claude continue/step/set-breakpoints while paused. Default OFF, resets each
+        // session (same in-memory safety model as auto-accept) - model-controlled execution is opt-in.
+        _allowDrive = new CheckBox
+        {
+            Content = "Allow Claude to drive debugger",
+            ToolTip = "Let Claude continue/step and set breakpoints while paused. Resets when VS restarts.",
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+        };
+        _allowDrive.Checked += (s, e) => BridgeStatus.SetAllowDebuggerDrive(true);
+        _allowDrive.Unchecked += (s, e) => BridgeStatus.SetAllowDebuggerDrive(false);
+        _allowDrive.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        left.Children.Add(_allowDrive);
+
         toolbar.Children.Add(right);
         toolbar.Children.Add(left);
         Grid.SetRow(toolbar, 1);
 
         // ---- Row 2: stats card ----
         _editsLine = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap };
+        _debugLine = new TextBlock { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
         _latestLine = new TextBlock { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
         _sessionLine = new TextBlock { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
 
@@ -114,6 +131,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
 
         var statsStack = new StackPanel();
         statsStack.Children.Add(_editsLine);
+        statsStack.Children.Add(_debugLine);
         statsStack.Children.Add(_latestLine);
         statsStack.Children.Add(_sessionLine);
         statsStack.Children.Add(_costRow);
@@ -228,6 +246,8 @@ internal sealed class ClaudeToolWindowControl : UserControl
     {
         if (_autoAccept.IsChecked != BridgeStatus.AutoAcceptEdits)
             _autoAccept.IsChecked = BridgeStatus.AutoAcceptEdits;
+        if (_allowDrive.IsChecked != BridgeStatus.AllowDebuggerDrive)
+            _allowDrive.IsChecked = BridgeStatus.AllowDebuggerDrive;
 
         // Status pill.
         if (BridgeStatus.Port is not int port)
@@ -252,6 +272,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
 
         // Stats card.
         _editsLine.Text = $"Edits   ✓ {BridgeStatus.EditsAccepted} accepted    ✗ {BridgeStatus.EditsRejected} rejected";
+        _debugLine.Text = $"Debugger   {BridgeStatus.DebugInspects} inspected   ·   {BridgeStatus.DebugDrives} driven";
 
         // Tokens are always shown; cost (an estimate) sits behind a toggle. We show the latest call
         // and the cumulative session separately, since the transcript spans the whole conversation.

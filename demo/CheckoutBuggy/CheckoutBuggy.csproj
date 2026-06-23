@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Debug-test fixture for the Phase 1 debugger-context feature. Unlike CheckoutDemo (which has a
+       deliberate COMPILE error so the debugger can't start), this project COMPILES and RUNS - but has a
+       deliberate LOGIC flaw (integer-division discount) that only shows up at runtime. Open this project
+       in VS, set a breakpoint in Checkout.ApplyDiscount, F5, and ask Claude why the total is wrong: the
+       UserPromptSubmit hook injects the live call stack + locals so it can diagnose from runtime values. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

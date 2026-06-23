@@ -28,6 +28,7 @@ internal sealed class BridgeHost : IDisposable
     private Lockfile? _lockfile;
     private IdeWebSocketServer? _server;
     private WorkspaceWatcher? _watcher;
+    private Debugging.DebuggerDriver? _driver; // Phase 3: drives the debugger (continue/step/breakpoints)
 
     public BridgeHost(AsyncPackage package) => _package = package;
 
@@ -62,14 +63,42 @@ internal sealed class BridgeHost : IDisposable
         // Let the selection tracker push selection_changed over this server.
         Editor.SelectionService.Attach(_server, ThreadHelper.JoinableTaskFactory);
 
-        // Reflect CLI connect/disconnect in the dockable panel.
-        _server.ConnectionChanged += connected => Ui.BridgeStatus.SetConnected(connected);
+        // Reflect CLI connect/disconnect in the dockable panel. On a FULL disconnect (no clients left),
+        // reject + close any orphaned diffs: their openDiff/permission caller is gone, so the parked
+        // decision would never be delivered and the diff frame + InfoBar would linger. We deliberately
+        // do NOT touch the lockfile - the server is still listening and the CLI needs the lockfile
+        // (port + auth token) to reconnect.
+        _server.ConnectionChanged += connected =>
+        {
+            Ui.BridgeStatus.SetConnected(connected);
+            if (connected) return;
+#pragma warning disable VSSDK007
+            ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+            {
+                try { await Diff.DiffRegistry.CloseAllAsync(); }
+                catch (Exception e) { Log.Warn($"orphan diff cleanup on disconnect failed: {e.Message}"); }
+            }).FileAndForget("claudecodevs/disconnectCleanup");
+#pragma warning restore VSSDK007
+        };
 
         // Single-gate: the PreToolUse hook POSTs to /permission, which routes here to show the diff.
         _server.PermissionHandler = ShowPermissionDiffAsync;
 
         // Stats: the Stop hook POSTs the transcript path to /usage; we parse it for tokens/cost.
         _server.UsageHandler = UsageTracker.UpdateFromTranscriptAsync;
+
+        // Debug awareness: the UserPromptSubmit hook POSTs to /debug-context; we read the live VS
+        // debugger (break location, call stack, locals) and hand it back to be injected into context.
+        _server.DebugContextHandler = GetDebugContextAsync;
+
+        // Debug PULL channel (Phase 2): a SECOND MCP server with its own registry of vs_* debug tools,
+        // served at POST /mcp. The CLI reaches it through the stdio shim that McpInstaller registers in
+        // .mcp.json - so the model can fetch live runtime state on demand mid-turn, not just at
+        // prompt-submit. Distinct from the IDE-protocol MCP on the WebSocket above (whose tools stay
+        // dormant); reuses the same McpServer dispatch over a different tool set. The driver (Phase 3)
+        // owns the IVsDebugger event subscription + the await-next-break coordination for the drive tools.
+        _driver = new Debugging.DebuggerDriver();
+        _server.DebugMcp = new McpServer(new ToolRegistry(BuildDebugTools(_driver)));
 
         // Run the accept loop in the background. If it ever faults (not a normal shutdown), delete the
         // lockfile so we don't keep advertising a dead bridge that blocks reconnection (issue #5043).
@@ -158,6 +187,42 @@ internal sealed class BridgeHost : IDisposable
 #pragma warning restore VSSDK007
     }
 
+    /// <summary>
+    /// Read the current VS debugger state for the UserPromptSubmit hook to inject into Claude's context.
+    /// Hops to the UI thread (EnvDTE is UI-thread bound). Returns a compact JSON snapshot; on any failure
+    /// returns {"mode":"unknown"} so the hook simply injects nothing (fail-open, never blocks the turn).
+    /// </summary>
+    private async Task<string> GetDebugContextAsync(CancellationToken ct)
+    {
+        try
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+            // Fully qualified: `using System.Diagnostics` is in scope here, so a bare `Debugging` could
+            // be misread - and `Debug` would collide with System.Diagnostics.Debug outright.
+            var snap = ClaudeCodeVs.Debugging.DebuggerReader.ReadSnapshot();
+            var mode = (string?)snap["mode"];
+            if (mode == "break")
+            {
+                var fn = (string?)snap["stoppedAt"]?["function"] ?? "?";
+                int frames = (snap["callStack"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                int args = (snap["args"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                int locals = (snap["locals"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                Log.Info($"debug-context: break at {fn} ({frames} frame(s), {args} arg(s), {locals} local(s)) -> injecting");
+            }
+            else
+            {
+                // Not paused -> the hook injects nothing. Event level so normal (non-debug) turns stay quiet.
+                Log.Event($"debug-context: mode={mode} (not paused; nothing injected)");
+            }
+            return snap.ToString(Newtonsoft.Json.Formatting.None);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"debug-context read failed: {e.Message}");
+            return "{\"mode\":\"unknown\"}";
+        }
+    }
+
     private static IEnumerable<IIdeTool> BuildTools(DiffDecisions decisions)
     {
         yield return new OpenFileTool();
@@ -176,6 +241,35 @@ internal sealed class BridgeHost : IDisposable
         // Remaining stub (executeCode -> MCP error).
         foreach (var stub in ParityTools.All())
             yield return stub;
+    }
+
+    /// <summary>
+    /// The Phase 2 debug PULL tools, served on the secondary /mcp surface (NOT the IDE WebSocket). Kept
+    /// in a separate registry so they're real, callable MCP tools the CLI surfaces to the model - unlike
+    /// the IDE-protocol tools above, which the CLI advertises but keeps dormant.
+    /// </summary>
+    private static IEnumerable<IIdeTool> BuildDebugTools(Debugging.DebuggerDriver driver)
+    {
+        // Phase 2 - read/pull (ungated).
+        yield return new VsDebugStateTool();
+        yield return new VsListBreakpointsTool();
+        yield return new VsGetFrameLocalsTool();
+        yield return new VsEvaluateTool();
+        yield return new VsExpandTool();    // object-graph expansion
+        yield return new VsThreadsTool();   // all threads + stacks
+        // Phase 3 - drive (each gated behind BridgeStatus.AllowDebuggerDrive).
+        yield return new VsContinueTool(driver);
+        yield return new VsStepOverTool(driver);
+        yield return new VsStepIntoTool(driver);
+        yield return new VsStepOutTool(driver);
+        yield return new VsRunToLineTool(driver);
+        yield return new VsSetBreakpointTool(driver);
+        yield return new VsRemoveBreakpointTool(driver);
+        yield return new VsFreezeThreadTool(driver);      // freeze/thaw a thread
+        yield return new VsSetNextStatementTool(driver);  // move the execution pointer
+        // Phase 3 - session control (start = F5 to first break, stop = Shift+F5).
+        yield return new VsStartDebuggingTool(driver);
+        yield return new VsStopDebuggingTool(driver);
     }
 
     /// <summary>Best-effort workspace root for the lockfile: the open solution's directory, else none.</summary>
@@ -219,12 +313,20 @@ internal sealed class BridgeHost : IDisposable
             return;
         }
 
+        // Reap zombie lockfiles (dead/recycled-PID instances) before launching, so the CLI's /ide and
+        // our hooks see only live bridges. Our own lockfile is alive, so it's never reaped.
+        Lockfile.ReapStale();
+
         string? workspace = await GetWorkspaceRootAsync();
 
         // Auto-install the single-gate PreToolUse hook into the workspace so accepting/rejecting our
         // diff is the sole edit gate (no terminal prompt). Best-effort; idempotent; safe to re-run.
+        // Also register the debug PULL MCP server (.mcp.json + stdio shim) for Phase 2 pull-on-demand.
         if (!string.IsNullOrEmpty(workspace))
+        {
             Hooks.PermissionHookInstaller.EnsureInstalled(workspace!);
+            Hooks.McpInstaller.EnsureInstalled(workspace!);
+        }
 
         // Launch in DEFAULT permission mode. We tried --permission-mode acceptEdits to drop the CLI's
         // terminal edit-prompt, but verified it makes the CLI auto-apply edits and NOT call openDiff at
@@ -260,6 +362,7 @@ internal sealed class BridgeHost : IDisposable
     {
         try { _cts.Cancel(); } catch { /* shutting down */ }
         _watcher?.Dispose();
+        _driver?.Dispose(); // unadvise the IVsDebugger event sink (best-effort)
         _lockfile?.Delete();
         _cts.Dispose();
     }

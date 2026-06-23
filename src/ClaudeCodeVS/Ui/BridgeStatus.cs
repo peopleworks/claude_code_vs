@@ -36,6 +36,10 @@ internal static class BridgeStatus
     public static int EditsAccepted { get; private set; }
     public static int EditsRejected { get; private set; }
 
+    /// <summary>Session-level debugger attribution: how often Claude inspected runtime state vs. drove execution.</summary>
+    public static int DebugInspects { get; private set; } // vs_debug_state / evaluate / expand / threads / …
+    public static int DebugDrives { get; private set; }   // continue / step / breakpoints / start-stop / …
+
     /// <summary>Token counts + estimated cost; used for both the latest call and the cumulative session.</summary>
     public readonly struct Usage
     {
@@ -71,6 +75,22 @@ internal static class BridgeStatus
     {
         if (AutoAcceptEdits == value) return;
         AutoAcceptEdits = value;
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Allow Claude to DRIVE the debugger (Phase 3): continue/step, run-to-line, and set/remove
+    /// breakpoints via the vs_continue/vs_step_*/vs_*_breakpoint tools. In-memory only (resets each VS
+    /// session) so model-controlled execution is never silently left on - same safety model as
+    /// <see cref="AutoAcceptEdits"/>. READS (vs_debug_state, vs_evaluate, …) are NOT gated; only
+    /// execution control and breakpoint mutation are.
+    /// </summary>
+    public static bool AllowDebuggerDrive { get; private set; }
+
+    public static void SetAllowDebuggerDrive(bool value)
+    {
+        if (AllowDebuggerDrive == value) return;
+        AllowDebuggerDrive = value;
         Changed?.Invoke();
     }
 
@@ -122,6 +142,12 @@ internal static class BridgeStatus
         if (accepted) EditsAccepted++; else EditsRejected++;
         Changed?.Invoke();
     }
+
+    /// <summary>Record a debugger READ (vs_debug_state, vs_evaluate, vs_expand, vs_threads, …) for the stats strip.</summary>
+    public static void RecordDebugInspect() { DebugInspects++; Changed?.Invoke(); }
+
+    /// <summary>Record a debugger DRIVE (continue/step/run-to/breakpoints/start-stop/freeze/set-next) for the stats strip.</summary>
+    public static void RecordDebugDrive() { DebugDrives++; Changed?.Invoke(); }
 
     /// <summary>Track a diff awaiting the user's decision (shown in the pending list).</summary>
     public static void AddPending(string id, string filePath)
