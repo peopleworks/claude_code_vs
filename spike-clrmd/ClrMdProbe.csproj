@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ClrMD Step-0 spike probe.
+
+    Deliberately net48 + x64 to mirror the extension's exact runtime:
+      * net48          - the VSIX is net48; this proves ClrMD loads + binding-redirects work there.
+      * x64            - devenv is x64; ClrMD must run same-bitness as the target it inspects.
+    Kept OUT of spike/ (that project globs **/*.cs as net8 and would try to compile this).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>ClrMdProbe</AssemblyName>
+    <RootNamespace>ClrMdProbe</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- ClrMD (netstandard2.0) drags in System.Collections.Immutable / ...Unsafe etc.;
+         net48 needs binding redirects for those. This is the "packaging chore" the spike surfaces. -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The deadlock-fixture subfolder is a separate net8 project; keep it out of this net48 probe. -->
+    <Compile Remove="deadlock-fixture\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets `dotnet build` target net48 without the targeting pack installed. -->
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
