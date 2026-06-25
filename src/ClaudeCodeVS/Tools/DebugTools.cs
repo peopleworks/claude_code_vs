@@ -209,3 +209,63 @@ internal sealed class VsThreadsTool : IIdeTool
         return result;
     }
 }
+
+/// <summary>vs_exception - inspect the exception in scope ($exception) at a first-chance break or in a catch.</summary>
+internal sealed class VsExceptionTool : IIdeTool
+{
+    public string Name => "vs_exception";
+    public string Description =>
+        "Inspect the exception currently in scope while paused ($exception) - at a first-chance break "
+        + "(after vs_break_on_thrown) or inside a catch block. Returns its type, message, and an expanded "
+        + "tree including InnerException and stack, so you see WHAT was thrown and WHY without knowing the "
+        + "$exception pseudo-variable. Break-mode only.";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["frameIndex"] = new JObject { ["type"] = "integer", ["description"] = "Frame to evaluate in, 0 = current (default 0)." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        int frameIndex = (int?)args["frameIndex"] ?? 0;
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var result = DebuggerReader.ReadException(frameIndex);
+        Log.Info($"vs_exception -> mode={(string?)result["mode"]}, type={(string?)result["type"] ?? "(none)"}");
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+}
+
+/// <summary>vs_list_processes - local processes available to attach to (the door to debugging real apps).</summary>
+internal sealed class VsListProcessesTool : IIdeTool
+{
+    public string Name => "vs_list_processes";
+    public string Description =>
+        "List running local processes you can attach the debugger to (id + name, flagged if already being "
+        + "debugged). Pass a name filter (e.g. 'dotnet', 'w3wp', or the app name) - the machine has hundreds "
+        + "of processes. Use this to find a running web app / service / desktop app, then vs_attach to it. "
+        + "Works in any mode.";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["filter"] = new JObject { ["type"] = "string", ["description"] = "Case-insensitive substring to match in the process name/path (recommended)." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        string? filter = (string?)args["filter"];
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var result = DebuggerReader.ReadProcesses(filter);
+        Log.Info($"vs_list_processes(filter={filter ?? "*"}) -> {(int?)result["count"] ?? 0} match(es)");
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+}

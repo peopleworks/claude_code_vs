@@ -30,6 +30,7 @@ internal static class DebuggerReader
     private const int MaxExpandChildren = 40; // cap child members rendered per level
     private const int MaxThreads = 60;        // cap threads listed
     private const int MaxThreadFrames = 12;   // cap call-stack depth reported per thread
+    private const int MaxProcesses = 200;     // cap processes listed (the machine has hundreds; filter by name)
 
     /// <summary>Read a debug-state snapshot. Must be called on the UI thread.</summary>
     public static JObject ReadSnapshot()
@@ -45,9 +46,16 @@ internal static class DebuggerReader
         try { mode = dbg.CurrentMode; }
         catch { return Mode("unknown"); }
 
-        // Only break mode has a meaningful stack/locals to report.
+        // Design mode = not debugging; nothing to report. Run mode = debugging but not paused: report the
+        // session shape (what we're attached to) but no stack. Break mode = the full snapshot below.
+        if (mode == dbgDebugMode.dbgDesignMode)
+            return Mode("design");
         if (mode != dbgDebugMode.dbgBreakMode)
-            return Mode(mode == dbgDebugMode.dbgRunMode ? "run" : "design");
+        {
+            var runSnap = Mode("run");
+            AddDebuggedProcesses(runSnap, dbg);
+            return runSnap;
+        }
 
         var snap = Mode("break");
 
@@ -96,6 +104,7 @@ internal static class DebuggerReader
         }
         catch (Exception e) { Log(snap, $"locals unavailable: {e.Message}"); }
 
+        AddDebuggedProcesses(snap, dbg); // session shape: what we're attached to (multi-process awareness)
         return snap;
     }
 
@@ -357,8 +366,108 @@ internal static class DebuggerReader
                 }
                 catch { }
                 o["stack"] = frames;
+                // Cheap deadlock/contention triage: flag threads whose top frames look like a lock/wait.
+                // Heuristic only - EnvDTE can't give true lock ownership (see vs_threads notes).
+                var waitOn = WaitHint(frames);
+                if (waitOn != null) { o["waiting"] = true; o["waitOn"] = waitOn; }
                 arr.Add(o);
             }
+        }
+        catch (Exception e) { result["error"] = e.Message; }
+        return result;
+    }
+
+    /// <summary>
+    /// Inspect the exception in scope ($exception) while paused - at a first-chance break (after
+    /// vs_break_on_thrown reaches a throw) or inside a catch block. Returns its type, message, and an
+    /// expanded tree (incl. InnerException + stack) so the model sees WHAT was thrown and WHY without
+    /// having to know the $exception pseudo-variable. Break-mode only.
+    /// </summary>
+    public static JObject ReadException(int frameIndex)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var dbg = (ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE)?.Debugger;
+        if (dbg == null) return Mode("unknown");
+        if (!TryBreakMode(dbg, out var notBreak)) return notBreak;
+
+        StackFrame? prev = null;
+        bool switched = false;
+        try
+        {
+            if (frameIndex > 0)
+            {
+                var target = FrameAt(dbg, frameIndex);
+                if (target != null) { prev = dbg.CurrentStackFrame; dbg.CurrentStackFrame = target; switched = true; }
+            }
+
+            var ex = dbg.GetExpression("$exception", true, EvalTimeoutMs);
+            bool valid = false; try { valid = ex.IsValidValue; } catch { }
+            if (!valid)
+                return new JObject
+                {
+                    ["mode"] = "break",
+                    ["exception"] = null,
+                    ["note"] = "no exception in scope here. Reach a throw site (vs_break_on_thrown, then run to it) "
+                             + "or stop inside a catch block, then retry.",
+                };
+
+            var result = new JObject { ["mode"] = "break", ["frameIndex"] = frameIndex };
+            try { result["type"] = ex.Type ?? ""; } catch { }
+            // Message is the single most useful field - pull it out explicitly alongside the full tree.
+            try
+            {
+                var msg = dbg.GetExpression("$exception.Message", true, EvalTimeoutMs);
+                if (msg.IsValidValue) result["message"] = Truncate(msg.Value ?? "");
+            }
+            catch { }
+            result["object"] = ExpandExpression(ex, 2); // depth 2: surfaces InnerException + key fields
+            return result;
+        }
+        catch (Exception e) { return new JObject { ["mode"] = "break", ["error"] = e.Message }; }
+        finally { if (switched && prev != null) { try { dbg.CurrentStackFrame = prev; } catch { } } }
+    }
+
+    /// <summary>
+    /// List local processes available to attach to (optionally filtered by a name substring), each with
+    /// id + name, flagged if we're already debugging it. The key to debugging REAL apps - a running web app
+    /// (Kestrel / IIS w3wp), service, or desktop app - instead of only F5-launching a startup project.
+    /// Works in any mode. The machine has hundreds of processes, so pass a filter (e.g. 'dotnet', 'w3wp').
+    /// </summary>
+    public static JObject ReadProcesses(string? filter)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var result = new JObject { ["mode"] = "unknown", ["processes"] = new JArray() };
+        var dbg = (ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE)?.Debugger;
+        if (dbg == null) return result;
+        result["mode"] = ModeString(dbg);
+        if (!string.IsNullOrEmpty(filter)) result["filter"] = filter;
+
+        try
+        {
+            // What we're already attached to, so the list can flag it.
+            var attached = new HashSet<int>();
+            try { foreach (EnvDTE.Process dp in dbg.DebuggedProcesses) { try { attached.Add(dp.ProcessID); } catch { } } }
+            catch { }
+
+            var arr = (JArray)result["processes"]!;
+            int n = 0, matched = 0;
+            foreach (EnvDTE.Process p in dbg.LocalProcesses) // qualify: System.Diagnostics.Process could be in scope
+            {
+                string name = ""; int id = 0;
+                try { name = p.Name ?? ""; } catch { }
+                try { id = p.ProcessID; } catch { }
+                if (!string.IsNullOrEmpty(filter) && name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+                matched++;
+                if (n >= MaxProcesses) { arr.Add(TruncMarker($"capped at {MaxProcesses} processes; narrow with a name filter")); break; }
+                n++;
+                var o = new JObject { ["id"] = id, ["name"] = name };
+                if (attached.Contains(id)) o["attached"] = true;
+                arr.Add(o);
+            }
+            result["count"] = matched;
         }
         catch (Exception e) { result["error"] = e.Message; }
         return result;
@@ -378,6 +487,34 @@ internal static class DebuggerReader
             argNames.Add((string?)a["name"] ?? "");
 
         into["locals"] = ReadExpressions(frame.Locals, argNames);
+    }
+
+    /// <summary>
+    /// Add the set of processes currently being debugged ("session shape") - so after a vs_attach, or a
+    /// multi-process session (client+server, a web worker pool), the model knows what it's attached to and
+    /// can pick a process to reason about. Only called while actually debugging (run/break). Best-effort:
+    /// never let session-shape info break the snapshot.
+    /// </summary>
+    private static void AddDebuggedProcesses(JObject snap, Debugger dbg)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            var procs = dbg.DebuggedProcesses;
+            if (procs == null) return;
+            var arr = new JArray();
+            int n = 0;
+            foreach (EnvDTE.Process p in procs) // qualify: System.Diagnostics.Process could be in scope
+            {
+                if (n++ >= MaxProcesses) { arr.Add(TruncMarker($"capped at {MaxProcesses} processes")); break; }
+                int id = 0; string name = "";
+                try { id = p.ProcessID; } catch { }
+                try { name = p.Name ?? ""; } catch { }
+                arr.Add(new JObject { ["id"] = id, ["name"] = name });
+            }
+            if (arr.Count > 0) snap["debuggedProcesses"] = arr;
+        }
+        catch { /* best-effort */ }
     }
 
     /// <summary>The StackFrame at <paramref name="index"/> (0 = innermost), or null if out of range.</summary>
@@ -487,6 +624,33 @@ internal static class DebuggerReader
         ThreadHelper.ThrowIfNotOnUIThread(); // EnvDTE StackFrame access is main-thread only
         try { return f?.FunctionName ?? ""; }
         catch { return ""; }
+    }
+
+    // Top-of-stack frame names that suggest a thread is parked on a lock/wait (deadlock/contention triage).
+    private static readonly string[] WaitMarkers =
+    {
+        "Monitor.Enter", "Monitor.TryEnter", "Monitor.Wait", ".WaitOne", "WaitHandle", "Task.Wait",
+        ".GetResult", "SemaphoreSlim", "Semaphore.", "ManualResetEvent", "AutoResetEvent", "CountdownEvent",
+        "ReaderWriterLock", "SpinLock", "Thread.Join", "Thread.Sleep", "Barrier.", "Mutex.",
+    };
+
+    /// <summary>
+    /// Heuristic: does this thread's top-of-stack look like it's parked on a lock/wait? Pure string match on
+    /// the already-read frame names - points the model at deadlock/contention suspects. NOT authoritative
+    /// (EnvDTE can't give true lock ownership); it just flags "this thread is blocked on something".
+    /// </summary>
+    private static string? WaitHint(JArray frames)
+    {
+        int n = 0;
+        foreach (var f in frames)
+        {
+            if (n++ >= 3) break; // only the top few frames
+            if (f?.Type != JTokenType.String) continue;
+            var s = (string?)f ?? "";
+            foreach (var m in WaitMarkers)
+                if (s.IndexOf(m, StringComparison.OrdinalIgnoreCase) >= 0) return m.Trim('.');
+        }
+        return null;
     }
 
     private static JObject Mode(string m) => new JObject { ["mode"] = m };

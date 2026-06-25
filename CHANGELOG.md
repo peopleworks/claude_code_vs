@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0 - 2026-06-24
+
+Headline: **debug real, running apps.** Attach to a live process — a hosted web app, a service, an already-running desktop app — instead of only F5-launching a startup project, and break at the *origin* of an exception instead of where a generic catch swallows it. Builds on the 1.2.0 debugger surface; full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+
+### Features
+
+- **Attach to a running process** — `vs_attach` (by pid or name) + `vs_list_processes` (name-filtered) + `vs_detach`. Debug a hosted ASP.NET app (Kestrel / IIS `w3wp`), a Windows service, or an already-running desktop app — the real-app case F5 can't cover. Plain `Process.Attach()` selects the managed engine.
+- **Break-on-thrown (first-chance exceptions)** — `vs_break_on_thrown` stops at the **throw site** of a named managed exception (e.g. `System.NullReferenceException`), even when a generic `catch` swallows it, so you see where it originates. Implemented via the managed `EnvDTE90.Debugger3.ExceptionGroups` API (not the low-level AD7 path).
+- **Inspect `$exception`** — `vs_exception` returns the in-scope exception's type, message, and an expanded tree (incl. `InnerException` + stack) at a first-chance break or inside a catch block.
+- **Function breakpoints** — `vs_set_breakpoint` now accepts a `function` name (e.g. `Namespace.Type.Method`) as an alternative to file:line — break wherever a method is entered, no source location needed. Conditions are supported.
+- **Multi-process session shape** — `vs_debug_state` now reports `debuggedProcesses` (what you're attached to), surfaced in run mode too.
+- **Concurrency triage** — `vs_threads` flags threads parked on a lock/wait (`waiting` / `waitOn`) to point at deadlock/contention suspects.
+
+### Notes
+
+- New fixture `demo/WebQuote` (ASP.NET Core) exercises attach + break-on-thrown end-to-end — verified live: the model attaches, arms break-on-thrown, triggers the request itself, lands at the throw site, inspects, and detaches.
+- **22** `vs-debug` tools total (8 read, ungated + 14 drive, gated). Reading runtime state stays ungated; attach/detach, break-on-thrown, and execution control are gated behind the "Allow Claude to drive debugger" toggle.
+- Tested against `claude` 2.1.186.
+
+---
+
 ## 1.2.0 - 2026-06-17
 
 Headline: **live debugger integration** — Claude can now see your program's runtime state, and (opt-in) drive the debugger to corner a bug instead of guessing from source. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).

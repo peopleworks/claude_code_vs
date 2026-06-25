@@ -20,7 +20,7 @@ If you ever find yourself adding an LLM API call, an agent loop, or a tool the C
 - `src/ClaudeCodeVS/Tools/` - one `IIdeTool` per tool: the 12 IDE-protocol tools (openDiff, openFile, getDiagnostics, …) plus the debugger surface - `DebugTools.cs` (reads) + `DriveTools.cs` (gated drive).
 - `src/ClaudeCodeVS/Diff/` - diff rendering + Accept/Reject InfoBar + write-back + tab registry.
 - `src/ClaudeCodeVS/Editor/` - selection service + TextViewListener MEF component + Error List reader + RDT helpers.
-- `src/ClaudeCodeVS/Debugging/` - `DebuggerReader` (EnvDTE reads: break state, stack, locals, threads, object-graph expansion) + `DebuggerDriver` (`IVsDebugger` drive: continue/step/breakpoints/session + the await-break engine).
+- `src/ClaudeCodeVS/Debugging/` - `DebuggerReader` (EnvDTE reads: break state, stack, locals, threads, object-graph expansion, `$exception`, processes) + `DebuggerDriver` (EnvDTE/`IVsDebugger` drive: continue/step/breakpoints/session, break-on-thrown via `EnvDTE90.Debugger3`, attach/detach + the await-break engine).
 - `src/ClaudeCodeVS/Hooks/` - hook installer (`PermissionHookInstaller`) + `McpInstaller` (registers the `vs-debug` MCP server) + embedded scripts: `vs-permission-hook.ps1`, `vs-usage-hook.ps1`, `vs-debug-context-hook.ps1`, `vs-mcp-shim.ps1`.
 - `src/ClaudeCodeVS/Ui/` - dockable panel (BridgeStatus state, ClaudeToolWindowControl WPF, ReasonDialog).
 - `BridgeHost.cs` - wires everything together; owns the `/permission` handler and CLI launcher.
@@ -79,7 +79,7 @@ All 12 tools are implemented. The CLI exposes only `getDiagnostics` + `executeCo
 - [ ] Phase 3 - VS 2022 backfill, Roslyn-precise ranges (reconnect/multi-window hardening ✅ shipped 1.2.0)
 - [ ] Phase 4 - embedded chat (deferred)
 
-## Debugger integration (1.2.0)
+## Debugger integration (1.2.0; 1.3.0 adds attach + break-on-thrown)
 
 Live debugger exposed to the model over the SAME bridge (full reference: `docs/DEBUGGER.md`). Three channels — needed because the IDE-protocol WS tools are CLI-curated (dormant), so you CAN'T add a model-callable tool there:
 
@@ -87,7 +87,9 @@ Live debugger exposed to the model over the SAME bridge (full reference: `docs/D
 - **Pull** - a SECOND `McpServer` served at `POST /mcp` on the same `HttpListener`, reached by `vs-mcp-shim.ps1` (a stdio↔HTTP proxy auto-registered in the workspace `.mcp.json` as server `vs-debug`). The shim does the most-specific-listening-lockfile discovery; tool logic runs in-proc against EnvDTE. This is the OPEN plugin door (all tools surfaced), unlike the curated IDE channel.
 - **Drive** - execution control on the same `/mcp` server, gated behind `BridgeStatus.AllowDebuggerDrive` (panel toggle, default OFF, resets per session - mirrors auto-accept). Async "issue → await next break" via `IVsDebuggerEvents.OnModeChange` + a parked `TaskCompletionSource` (the openDiff deferred pattern); never blocks the UI thread.
 
-**17 tools** on `vs-debug` (6 read, ungated + 11 drive, gated) + the push hook. Reads: `vs_debug_state` / `vs_evaluate` / `vs_expand` / `vs_get_frame_locals` / `vs_list_breakpoints` / `vs_threads`. Drive: continue, step over/into/out, run_to_line, set/remove_breakpoint, freeze_thread, set_next_statement, start/stop_debugging. All EnvDTE access is on the UI thread (convention #1). Capped reads carry a `{truncated:true}` marker so the model knows data was cut. Fixtures: `demo/{CheckoutBuggy,SignalScan,ComboScore,NullOrigin}`. **Not yet:** break-on-thrown (needs COM `IDebugEngine2.SetException`), native tracepoints.
+**22 tools** on `vs-debug` (8 read, ungated + 14 drive, gated) + the push hook. Reads: `vs_debug_state` / `vs_evaluate` / `vs_expand` / `vs_get_frame_locals` / `vs_list_breakpoints` / `vs_threads` / `vs_exception` / `vs_list_processes`. Drive: continue, step over/into/out, run_to_line, set/remove_breakpoint (file:line **or by function name**), `vs_break_on_thrown` (first-chance exception break), freeze_thread, set_next_statement, start/stop_debugging, `vs_attach`/`vs_detach` (debug a running real app, not just F5). All EnvDTE access is on the UI thread (convention #1). Capped reads carry a `{truncated:true}` marker so the model knows data was cut. Fixtures: `demo/{CheckoutBuggy,SignalScan,ComboScore,NullOrigin,WebQuote}` (WebQuote = ASP.NET app for the attach + break-on-thrown loop; live-verified 1.3.0).
+
+**Break-on-thrown is the managed `EnvDTE90.Debugger3.ExceptionGroups.SetBreakWhenThrown` API — NOT the low-level COM `IDebugEngine2.SetException`.** An earlier note wrongly claimed it needed AD7; the real blocker was just casting `DTE.Debugger` up to `Debugger3` (the member doesn't exist on the base `EnvDTE.Debugger`). Verified live on the modern Concord engine (1.3.0). **Still not yet:** native tracepoints, data breakpoints, structured lock/wait-chain ownership (these *do* need AD7/Concord or out-of-proc tooling like SOS/ClrMD — see `ROADMAP.md`).
 
 ## Diagnostics
 
