@@ -94,6 +94,38 @@ internal sealed class DebuggerDriver : IVsDebuggerEvents, IDisposable
         }
     }
 
+    /// <summary>
+    /// Break All: pause a RUNNING debuggee that isn't sitting on a breakpoint - the only way to inspect a
+    /// hung or deadlocked program (a deadlocked thread never hits a breakpoint). Issues EnvDTE's Break with
+    /// WaitForBreakOrEnd=false (never blocks the UI thread) and awaits the next break through the same
+    /// OnModeChange engine as continue/step. Returns the current snapshot if already paused; errors in
+    /// design mode (nothing running to pause).
+    /// </summary>
+    public async Task<JObject> BreakAllAsync(int timeoutMs, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var dbg = Dte()?.Debugger;
+        if (dbg == null) return Err("no debugger available");
+
+        dbgDebugMode mode;
+        try { mode = dbg.CurrentMode; } catch { mode = dbgDebugMode.dbgDesignMode; }
+        if (mode == dbgDebugMode.dbgBreakMode) return DebuggerReader.ReadSnapshot(); // already paused
+        if (mode == dbgDebugMode.dbgDesignMode)
+            return new JObject { ["mode"] = "design", ["error"] = "not debugging; nothing to pause (start a session with vs_start_debugging or vs_attach first)" };
+
+        if (!BeginCommand()) return Err("a debugger drive command is already in progress");
+        try
+        {
+            EnsureAdvised();
+            var waiter = ArmWaiter();          // park BEFORE issuing so we can't miss an instant break
+            try { dbg.Break(false); }          // Break All; WaitForBreakOrEnd=false (don't block the UI thread)
+            catch (Exception e) { ClearWaiter(waiter); return Err($"break failed: {e.Message}"); }
+            return await AwaitBreakAsync(waiter, timeoutMs, ct);
+        }
+        finally { EndCommand(); }
+    }
+
     // ===== session control (start = F5 + await first break; stop = Shift+F5) =====
 
     /// <summary>Start a debug session (only from design mode) and run to the first break (or completion).</summary>

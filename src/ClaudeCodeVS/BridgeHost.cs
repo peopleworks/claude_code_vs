@@ -265,6 +265,7 @@ internal sealed class BridgeHost : IDisposable
         yield return new VsStepIntoTool(driver);
         yield return new VsStepOutTool(driver);
         yield return new VsRunToLineTool(driver);
+        yield return new VsBreakAllTool(driver);          // pause a running/hung debuggee (Break All)
         yield return new VsSetBreakpointTool(driver);
         yield return new VsRemoveBreakpointTool(driver);
         yield return new VsBreakOnThrownTool(driver);     // first-chance break at a managed exception's throw site

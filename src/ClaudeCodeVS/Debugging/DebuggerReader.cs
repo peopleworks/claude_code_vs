@@ -110,9 +110,11 @@ internal static class DebuggerReader
 
     /// <summary>
     /// Pull on demand: args + locals for a specific call-stack frame (0 = innermost/current). Lets the
-    /// model walk up the stack to inspect callers without the user touching the debugger. Break-mode only.
+    /// model walk up the stack to inspect callers without the user touching the debugger. With a non-zero
+    /// <paramref name="threadId"/> (from vs_threads) it reads that thread's frame instead of the current
+    /// one - e.g. inspecting each thread parked in a deadlock. Break-mode only.
     /// </summary>
-    public static JObject ReadFrameLocals(int frameIndex)
+    public static JObject ReadFrameLocals(int frameIndex, int threadId = 0)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
@@ -122,14 +124,39 @@ internal static class DebuggerReader
 
         var result = Mode("break");
         result["frameIndex"] = frameIndex;
+
+        // To read a NON-current thread's locals, make it the current thread first, then restore. EnvDTE
+        // evaluates in the current context, so reading another thread's StackFrame.Locals directly tends to
+        // come back empty/unavailable - switching is the reliable path. Restore afterward so the user's
+        // debugger UI is undisturbed (same idea as the CurrentStackFrame switch in Evaluate/Expand).
+        EnvDTE.Thread? prevThread = null;
+        bool switched = false;
         try
         {
+            if (threadId > 0)
+            {
+                var targetThread = FindThread(dbg, threadId);
+                if (targetThread == null) { result["error"] = $"no thread with id {threadId}"; return result; }
+                try { prevThread = dbg.CurrentThread; } catch { }
+                dbg.CurrentThread = targetThread;
+                switched = true;
+                result["threadId"] = threadId;
+            }
+
             var target = FrameAt(dbg, frameIndex);
-            if (target == null) { result["error"] = $"no frame at index {frameIndex}"; return result; }
+            if (target == null)
+            {
+                result["error"] = threadId > 0 ? $"no frame at index {frameIndex} on thread {threadId}" : $"no frame at index {frameIndex}";
+                return result;
+            }
             result["function"] = SafeFunction(target);
             AddArgsLocals(result, target);
         }
         catch (Exception e) { result["error"] = e.Message; }
+        finally
+        {
+            if (switched && prevThread != null) { try { dbg.CurrentThread = prevThread; } catch { } }
+        }
         return result;
     }
 
@@ -515,6 +542,22 @@ internal static class DebuggerReader
             if (arr.Count > 0) snap["debuggedProcesses"] = arr;
         }
         catch { /* best-effort */ }
+    }
+
+    /// <summary>The EnvDTE.Thread with <paramref name="threadId"/> in the current program, or null.</summary>
+    private static EnvDTE.Thread? FindThread(Debugger dbg, int threadId)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        EnvDTE.Program? program;
+        try { program = dbg.CurrentProgram; } catch { return null; }
+        if (program == null) return null;
+        foreach (EnvDTE.Thread th in program.Threads)
+        {
+            int id = -1;
+            try { id = th.ID; } catch { }
+            if (id == threadId) return th;
+        }
+        return null;
     }
 
     /// <summary>The StackFrame at <paramref name="index"/> (0 = innermost), or null if out of range.</summary>

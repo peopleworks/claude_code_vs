@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+Deadlock-triage follow-ups to the 1.3.0 debugger surface — both pure EnvDTE, no AD7.
+
+### Features
+
+- **`vs_break_all`** — pause a **running or hung** debuggee (Break All / Ctrl+Alt+Break) and return the new state. The way into a deadlock, which never *hits* a breakpoint so there's nothing to stop on. A gated drive tool; rides the same await-break engine (`Debugger.Break(false)` → `OnModeChange`) as continue/step.
+- **Per-thread locals** — `vs_get_frame_locals` gains an optional `threadId` (from `vs_threads`): it switches `Debugger.CurrentThread` to that thread, reads the frame, and restores the context — so you can read a *non-current* thread's args/locals (e.g. each thread parked in a deadlock cycle) without it being the stopped thread. Reads stay ungated.
+
+### Notes
+
+- **23** `vs-debug` tools total (8 read, ungated + 15 drive, gated).
+- New fixtures: **`demo/LockJam`** (five threads, a 3-node deadlock cycle buried in noise — exercises the `vs_threads` wait/lock heuristic, `vs_break_all`, and per-thread locals) and **`demo/AsyncTrace`** (cross-await inspection: locals/`vs_evaluate` on an async continuation, and characterizing how much of the logical async call stack surfaces).
+- Not yet live-verified on the Windows VS box (macOS dev box can't build the VSIX): the `vs_threads` `Monitor.Enter` flag depends on Just-My-Code not hiding the BCL frame, and direct non-current-thread reads use a `CurrentThread` switch as the reliable path — see the LockJam README.
+
 ## 1.3.0 - 2026-06-24
 
 Headline: **debug real, running apps.** Attach to a live process — a hosted web app, a service, an already-running desktop app — instead of only F5-launching a startup project, and break at the *origin* of an exception instead of where a generic catch swallows it. Builds on the 1.2.0 debugger surface; full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).

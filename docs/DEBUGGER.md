@@ -88,7 +88,7 @@ All tools live on the `vs-debug` MCP server and appear to the model as `mcp__vs-
 |---|---|
 | `vs_debug_state` | Mode, stop location, call stack (innermost first), current frame's args + locals with values. |
 | `vs_list_breakpoints` | All breakpoints (file, line, function, enabled, hit count, condition). Works in **any** mode. |
-| `vs_get_frame_locals` | Args + locals for a specific call-stack `frameIndex` (walk up to callers). |
+| `vs_get_frame_locals` | Args + locals for a call-stack `frameIndex` (walk up to callers); optional `threadId` (from `vs_threads`) reads **another thread's** frame — e.g. each thread parked in a deadlock. |
 | `vs_evaluate` | Evaluate an expression in a chosen frame → `{value, type, isValid}`. |
 | `vs_expand` | Drill into an object graph (`Expression.DataMembers`) to a depth → `{name,type,value,children}` tree. |
 | `vs_threads` | Every thread with its call stack + location; the current thread is flagged, and threads parked on a lock/wait are flagged (`waiting`/`waitOn`). |
@@ -102,6 +102,7 @@ All tools live on the `vs-debug` MCP server and appear to the model as `mcp__vs-
 | `vs_continue` | Resume to the next breakpoint or program end, then return the new state. |
 | `vs_step_over` / `vs_step_into` / `vs_step_out` | The three step modes, each awaiting the next break. |
 | `vs_run_to_line` | Run to a `file:line` (temporary breakpoint under the hood). |
+| `vs_break_all` | **Pause a running/hung debuggee** (Break All) and return the new state — the way into a deadlock, which never hits a breakpoint. Needs an active session in run mode. Pair with `vs_threads` + `vs_get_frame_locals`. |
 | `vs_set_breakpoint` | Set at `file:line` **or by `function` name** (break wherever a method is entered, no file:line needed), with optional `condition` and (file:line) `hitCount`/`hitCountType` (`equal`/`atLeast`/`multiple`). |
 | `vs_remove_breakpoint` | Clear the breakpoint(s) at a `file:line`. |
 | `vs_break_on_thrown` | Break at the **throw site** of a named managed exception (first-chance), even if it's caught — e.g. `System.NullReferenceException`. Enable/clear per type. |
@@ -140,13 +141,15 @@ The `UserPromptSubmit` hook injects the current break state (stop location, call
 
 ## Try it
 
-Four runnable fixtures under `demo/` exercise the feature (open the `.sln`, enable the drive toggle where noted, Launch Claude Code):
+Seven runnable fixtures under `demo/` exercise the feature (open the `.sln`, enable the drive toggle where noted, Launch Claude Code):
 
 - **`CheckoutBuggy`** — an integer-division discount bug; the push hook lets Claude diagnose from the paused locals.
 - **`SignalScan`** — an aliasing bug confirmable at one paused point (`vs_evaluate('object.ReferenceEquals(windows[0], windows[2])')`). No bug-revealing comments.
 - **`ComboScore`** — a missing state reset that's invisible in the final state; forces stepping / a conditional breakpoint to watch `combo` across the bad iteration.
 - **`NullOrigin`** — an NRE thrown deep and swallowed by a generic catch; `vs_break_on_thrown` lands you at the throw site, not the catch.
 - **`WebQuote`** — an ASP.NET Core API that **stays running**, for the **attach** path: `vs_list_processes` → `vs_attach`, then `vs_break_on_thrown` and trigger `GET /quote/103` to break at the throw inside a request handler — the case F5 can't cover. Live-verified end-to-end (Claude attaches, arms, triggers the request itself, inspects, detaches).
+- **`LockJam`** — five threads, three locked in a 3-node cycle (`A→B→C→A`), one merely idle, one busy: exercises the `vs_threads` wait/lock heuristic and whether Claude can isolate the cycle from the noise. Self-breaks via `Debugger.Break()` once wedged (or Claude can pause it with `vs_break_all`), then reads each stuck thread with `vs_get_frame_locals` + `threadId` to nail the exact cycle. The README's PASS/FAIL covers the Just-My-Code caveat that decides whether the `Monitor.Enter` flag fires.
+- **`AsyncTrace`** — a three-level async pipeline whose awaits resume on the threadpool; pausing inside `InnerAsync` lands on a continuation. Confirms the current async frame's locals/`vs_evaluate` read correct post-await values, and characterizes how much of the logical async call chain the call stack surfaces.
 
 ---
 

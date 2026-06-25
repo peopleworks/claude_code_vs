@@ -70,7 +70,9 @@ internal sealed class VsGetFrameLocalsTool : IIdeTool
     public string Description =>
         "Get the arguments and local variables (with runtime values) for a specific call-stack frame "
         + "while paused. frameIndex 0 is the innermost/current frame; higher indices walk up toward "
-        + "callers. Use vs_debug_state first to see the call stack. Break-mode only.";
+        + "callers. By default reads the current/stopped thread; pass threadId (from vs_threads) to read "
+        + "ANOTHER thread's frame - e.g. to inspect each thread parked in a deadlock. Use vs_debug_state or "
+        + "vs_threads first to see the stacks. Break-mode only.";
 
     public JToken Schema => new JObject
     {
@@ -82,17 +84,24 @@ internal sealed class VsGetFrameLocalsTool : IIdeTool
                 ["type"] = "integer",
                 ["description"] = "Call-stack frame index, 0 = innermost/current (default 0).",
             },
+            ["threadId"] = new JObject
+            {
+                ["type"] = "integer",
+                ["description"] = "Thread id (from vs_threads) to read; omit or 0 = the current/stopped thread. Use to read another thread's locals (e.g. each thread in a deadlock cycle).",
+            },
         },
     };
 
     public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
     {
         int frameIndex = (int?)args["frameIndex"] ?? 0;
+        int threadId = (int?)args["threadId"] ?? 0;
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-        var result = DebuggerReader.ReadFrameLocals(frameIndex);
+        var result = DebuggerReader.ReadFrameLocals(frameIndex, threadId);
         var fn = (string?)result["function"];
         var vals = DebuggerReader.SummarizeValues(result);
-        Log.Info($"vs_get_frame_locals(frame={frameIndex}) -> mode={(string?)result["mode"]}{(fn != null ? $" @ {fn}" : "")}{(vals.Length > 0 ? $" · {vals}" : "")}");
+        string tgt = threadId > 0 ? $", thread={threadId}" : "";
+        Log.Info($"vs_get_frame_locals(frame={frameIndex}{tgt}) -> mode={(string?)result["mode"]}{(fn != null ? $" @ {fn}" : "")}{(vals.Length > 0 ? $" · {vals}" : "")}");
         Ui.BridgeStatus.RecordDebugInspect();
         return result;
     }

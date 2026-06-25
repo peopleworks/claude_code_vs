@@ -125,6 +125,20 @@ internal sealed class VsRunToLineTool : DriveToolBase
         => Driver.RunToLineAsync((string?)a["file"] ?? "", (int?)a["line"] ?? 0, DebuggerDriver.DefaultTimeoutMs, ct);
 }
 
+internal sealed class VsBreakAllTool : DriveToolBase
+{
+    public VsBreakAllTool(DebuggerDriver d) : base(d) { }
+    public override string Name => "vs_break_all";
+    public override string Description =>
+        "Pause a RUNNING debuggee that isn't sitting on a breakpoint (Break All / Ctrl+Alt+Break), then "
+        + "return the new state - the way to inspect a HUNG or DEADLOCKED program (a deadlocked thread never "
+        + "hits a breakpoint, so there's nothing to stop on). Needs an active session in run mode (start one "
+        + "with vs_start_debugging or vs_attach). Follow with vs_threads / vs_get_frame_locals to see what "
+        + "each thread is stuck on. Paused already? returns the current state. Driving enabled.";
+    public override JToken Schema => NoArgs();
+    protected override Task<JObject> RunAsync(JToken a, CancellationToken ct) => Driver.BreakAllAsync(DebuggerDriver.DefaultTimeoutMs, ct);
+}
+
 internal sealed class VsSetBreakpointTool : DriveToolBase
 {
     public VsSetBreakpointTool(DebuggerDriver d) : base(d) { }
