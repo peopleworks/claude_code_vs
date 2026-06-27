@@ -290,3 +290,60 @@ internal sealed class VsListProcessesTool : IIdeTool
         return result;
     }
 }
+
+/// <summary>
+/// vs_wait_chains - structured deadlock triage via a ClrMD process snapshot (not EnvDTE/stack-text).
+/// Reads a fork of the debuggee, so it coexists with VS owning the debug port. Runs the snapshot off the
+/// UI thread (it's slow and not a VS API); only the PID lookup is on the UI thread.
+/// </summary>
+internal sealed class VsWaitChainsTool : IIdeTool
+{
+    public string Name => "vs_wait_chains";
+    public string Description =>
+        "Deadlock triage via a ClrMD process SNAPSHOT (structured, not stack text): lists every HELD monitor "
+        + "with its owner thread + waiter count, every thread with the locks it holds and whether it's blocked "
+        + "(Monitor.Enter / Wait / Join), and 'deadlockSuspects' = threads that hold a lock AND are blocked "
+        + "entering a monitor (the cycle members). Needs an active debug session (a Break All first gives the "
+        + "cleanest read); it reads a fork, so it coexists with VS. Managed (.NET) only. For the explicit "
+        + "'waiting on lock owned by thread X' edge, also see vs_threads. Optional pid for multi-process "
+        + "sessions (default: the first debuggee).";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["pid"] = new JObject { ["type"] = "integer", ["description"] = "Process id to snapshot; omit to use the first debugged process." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var (mode, pids) = DebuggerReader.DebugTarget();
+        if (pids.Count == 0)
+        {
+            Log.Info($"vs_wait_chains -> mode={mode}, no debuggee");
+            Ui.BridgeStatus.RecordDebugInspect();
+            return new JObject { ["mode"] = mode, ["note"] = "No debugged process. Start or attach a debug session first (a Break All gives the cleanest snapshot)." };
+        }
+        int pid = (int?)args["pid"] ?? pids[0];
+
+        // Snapshot + CLR read OFF the UI thread (slow, and not a VS API) so devenv's UI never blocks.
+        JObject result = await Task.Run(() => ClrMdReader.ReadWaitChains(pid), ct);
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        result["mode"] = mode;
+        result["pid"] = pid;
+        if (result["error"] != null)
+            Log.Info($"vs_wait_chains(pid={pid}) -> error={(string?)result["error"]}");
+        else
+        {
+            int held = (result["heldLocks"] as JArray)?.Count ?? 0;
+            int susp = (result["deadlockSuspects"] as JArray)?.Count ?? 0;
+            Log.Info($"vs_wait_chains(pid={pid}) -> {held} held lock(s), {susp} suspect(s)");
+        }
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+}

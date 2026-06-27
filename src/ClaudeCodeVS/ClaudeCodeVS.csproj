@@ -27,6 +27,8 @@
     <Nullable>enable</Nullable>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <!-- Bundle NuGet runtime deps (ClrMD + its BCL shims) into the .vsix so they load in-proc in devenv. -->
+    <IncludeCopyLocalReferencesInVSIXContainer>true</IncludeCopyLocalReferencesInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
     <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
@@ -108,6 +110,9 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
+    <!-- ClrMD: structured CLR inspection (lock ownership, async stacks) via a process snapshot.
+         Resolves the netstandard2.0 asset under net48; transitive BCL shims load via ClrMdDependencyResolver. -->
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
   </ItemGroup>
 
   <ItemGroup>
