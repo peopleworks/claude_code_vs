@@ -35,9 +35,6 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     {
         await base.InitializeAsync(cancellationToken, progress);
 
-        // Make ClrMD's bundled BCL-shim deps resolvable in-proc, before any debug tool touches ClrMD.
-        Debugging.ClrMdDependencyResolver.Install();
-
         _host = new BridgeHost(this);
         await _host.StartAsync(cancellationToken);
 

@@ -27,8 +27,6 @@
     <Nullable>enable</Nullable>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
-    <!-- Bundle NuGet runtime deps (ClrMD + its BCL shims) into the .vsix so they load in-proc in devenv. -->
-    <IncludeCopyLocalReferencesInVSIXContainer>true</IncludeCopyLocalReferencesInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>false</IncludeDebugSymbolsInLocalVSIXDeployment>
     <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
@@ -110,9 +108,6 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
-    <!-- ClrMD: structured CLR inspection (lock ownership, async stacks) via a process snapshot.
-         Resolves the netstandard2.0 asset under net48; transitive BCL shims load via ClrMdDependencyResolver. -->
-    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
   </ItemGroup>
 
   <ItemGroup>
@@ -123,20 +118,19 @@
   <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="'$(VSToolsPath)' != '' And Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
 
   <!--
-    ClrMD wants newer BCL shims (e.g. System.Collections.Immutable 10.x) than devenv ships, and we can't add
-    binding redirects to devenv.exe.config. The VSSDK excludes "VS-provided" shims from the .vsix, so force
-    them back in: with these in the extension folder, ProvideBindingPath probing + ClrMdDependencyResolver
-    satisfy ClrMD's version-specific binds side-by-side with devenv's own copies.
+    Build the out-of-process ClrMD worker and ship its WHOLE output folder inside the .vsix under
+    ClrMdWorker\. The extension launches ClrMdWorker.exe as a child process (so ClrMD never loads in
+    devenv's AppDomain - that's the conflict we hit). It is deliberately NOT a ProjectReference, so its
+    assemblies never enter the extension's load context.
   -->
-  <Target Name="BundleClrMdShimsInVsix" AfterTargets="GetVsixSourceItems">
+  <Target Name="BuildAndBundleClrMdWorker" BeforeTargets="GetVsixSourceItems">
+    <MSBuild Projects="..\ClaudeCodeVS.ClrMdWorker\ClrMdWorker.csproj" Targets="Restore" Properties="Configuration=$(Configuration)" />
+    <MSBuild Projects="..\ClaudeCodeVS.ClrMdWorker\ClrMdWorker.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
     <ItemGroup>
-      <VSIXSourceItem Include="$(TargetDir)System.Collections.Immutable.dll" Condition="Exists('$(TargetDir)System.Collections.Immutable.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Memory.dll" Condition="Exists('$(TargetDir)System.Memory.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Runtime.CompilerServices.Unsafe.dll" Condition="Exists('$(TargetDir)System.Runtime.CompilerServices.Unsafe.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Buffers.dll" Condition="Exists('$(TargetDir)System.Buffers.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Numerics.Vectors.dll" Condition="Exists('$(TargetDir)System.Numerics.Vectors.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Threading.Tasks.Extensions.dll" Condition="Exists('$(TargetDir)System.Threading.Tasks.Extensions.dll')" />
-      <VSIXSourceItem Include="$(TargetDir)System.Text.Json.dll" Condition="Exists('$(TargetDir)System.Text.Json.dll')" />
+      <_ClrMdWorkerFile Include="..\ClaudeCodeVS.ClrMdWorker\bin\$(Configuration)\net48\**\*.*" />
+      <VSIXSourceItem Include="@(_ClrMdWorkerFile)">
+        <VSIXSubPath>ClrMdWorker\%(RecursiveDir)</VSIXSubPath>
+      </VSIXSourceItem>
     </ItemGroup>
   </Target>
 </Project>

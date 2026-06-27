@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Out-of-process ClrMD worker for the VS extension.
+
+    ClrMD cannot load reliably IN-PROC in devenv: ClrMD 4.0 binds System.Collections.Immutable 10.0.0.7,
+    but devenv ships several Immutable versions and unifies them via its own binding policy in
+    devenv.exe.config (which an in-proc extension can't override) -> MissingMethodException on
+    DataTarget.get_ClrVersions(). Running ClrMD in a SEPARATE PROCESS gives it its own .exe.config +
+    binding redirects, exactly like the standalone spike probe that worked. The extension shells out to
+    this exe and parses the JSON it writes to stdout.
+
+    net48 + x64: net48 needs no separate runtime; x64 to match devenv + the (x64) debuggee it snapshots.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>ClrMdWorker</AssemblyName>
+    <RootNamespace>ClrMdWorker</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="4.0.732401" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>
