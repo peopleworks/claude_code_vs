@@ -23,13 +23,21 @@ net48/x64 probe vs a deadlocked net8 process:
       obj=0x..a7e8  heldBy[os=42532]  waiters=1
       obj=0x..a800  heldBy[os=23648]  waiters=1
 
-Three of the four unknowns are **GREEN**: net48 load, x64 bitness, and the Gap-A read.
+Three of the four unknowns were proven here; the fourth — VS-coexistence — is now proven too
+(see below). **All four GREEN.**
 
 ## The make-or-break test — needs VS, run this
 The one thing the self-test can't cover: does the snapshot still work while **VS owns the
 debug port** on the same process? Theory says yes — `CreateSnapshotAndAttach` forks via
 `PssCaptureSnapshot`, which needs memory-read rights, not the debug port — but it must be
 verified against the live Concord engine.
+
+**RESULT — PASSED (2026-06-27).** Ran the probe against `Deadlock.exe` while VS was attached
+*and* at a Break All: it returned the 2 held monitors with holders resolved, exit 0, and VS
+continued cleanly afterward. The snapshot showed **7 threads vs 5 with no VS** — the 2 extras
+are VS's own debugger helper threads inside the debuggee, confirming the snapshot captured the
+live VS-attached state. The snapshot read coexists with a VS debug session; the make-or-break
+is retired. (Steps below kept for reproducibility.)
 
 1. Build both:
    - `dotnet build deadlock-fixture/Deadlock.csproj -c Debug`
