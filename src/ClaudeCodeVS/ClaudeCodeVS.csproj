@@ -121,4 +121,22 @@
 
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="'$(VSToolsPath)' != '' And Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
+
+  <!--
+    ClrMD wants newer BCL shims (e.g. System.Collections.Immutable 10.x) than devenv ships, and we can't add
+    binding redirects to devenv.exe.config. The VSSDK excludes "VS-provided" shims from the .vsix, so force
+    them back in: with these in the extension folder, ProvideBindingPath probing + ClrMdDependencyResolver
+    satisfy ClrMD's version-specific binds side-by-side with devenv's own copies.
+  -->
+  <Target Name="BundleClrMdShimsInVsix" AfterTargets="GetVsixSourceItems">
+    <ItemGroup>
+      <VSIXSourceItem Include="$(TargetDir)System.Collections.Immutable.dll" Condition="Exists('$(TargetDir)System.Collections.Immutable.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Memory.dll" Condition="Exists('$(TargetDir)System.Memory.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Runtime.CompilerServices.Unsafe.dll" Condition="Exists('$(TargetDir)System.Runtime.CompilerServices.Unsafe.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Buffers.dll" Condition="Exists('$(TargetDir)System.Buffers.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Numerics.Vectors.dll" Condition="Exists('$(TargetDir)System.Numerics.Vectors.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Threading.Tasks.Extensions.dll" Condition="Exists('$(TargetDir)System.Threading.Tasks.Extensions.dll')" />
+      <VSIXSourceItem Include="$(TargetDir)System.Text.Json.dll" Condition="Exists('$(TargetDir)System.Text.Json.dll')" />
+    </ItemGroup>
+  </Target>
 </Project>
