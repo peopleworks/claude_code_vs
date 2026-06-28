@@ -96,12 +96,49 @@ property of a hit breakpoint — crucially `DkmPendingDataBreakpoint.DataElement
 - **`bound.Target.Type` / `bound.Pending.Type`** — the concrete breakpoint classes, confirming
   whether `DkmRuntimeClrDataBreakpoint` is what actually backs a managed data BP.
 
-## Rung 1b — ARM (next, once 1a is read)
+## Rung 1b — ARM (current step)
 
-Using the observed `DataElementLocation`+`Size`+`SourceId`, call `DkmPendingDataBreakpoint.Create`
-(or `DkmRuntimeClrDataBreakpoint.Create`) from the right component tier at the first user break, and
-confirm an *unprompted* write trips the break. Only after that goes green do we build the
-extension↔component `DkmCustomMessage` channel and the model-facing `vs_set_data_breakpoint` tool.
+Rung 1a observation cracked the mechanism. The managed data BP is a **`DkmRuntimeCustomDataBreakpoint`**
+owned by Microsoft's own runtime monitor (`MSCustomDataBreakpointManagerId`), and the opaque field
+token is minted by **`DkmSuccessEvaluationResult.GetDataBreakpointInfo()`**. So we need **no monitor
+component** — one IDE-level component drives the whole public-API chain:
+
+```
+OnBoundBreakpointHit(thread)                                  // first normal breakpoint
+  -> thread.GetTopStackFrame()
+  -> DkmLanguageExpression.Create(C#, "target.Value")
+  -> DkmInspectionContext.EvaluateExpression(...)             // async work list
+  -> (DkmSuccessEvaluationResult).GetDataBreakpointInfo(out err)   // -> { Identifier, Size }
+  -> DkmPendingDataBreakpoint.Create(proc, sourceId, c#Id, thread, false, Identifier, Size, null)
+  -> .Enable(...)                                             // MS runtime monitor arms it
+```
+
+`SpikeService` now does exactly this on the first normal breakpoint, logging every step.
+
+### The make-or-break test (does our programmatic arm actually break?)
+
+1. **Close any running `DataBpTarget`** from a prior run (it holds the exe lock), then **reinstall**
+   the 0.3.0 VSIX and **restart VS**.
+2. **Delete** `%TEMP%\ConcordSpike-observe.log`.
+3. Open `spike-concord\fixture\DataBpTarget.csproj` in VS 2026 (**.NET 8 / x64**).
+4. **Set a normal breakpoint (F9)** on the line marked `>>> BREAKPOINT <<<` (the `Thread.Sleep(50);`
+   line) — **do NOT set any data breakpoint yourself.**
+5. **F5.** Execution stops at that line → the component evaluates `target.Value` and arms a data BP.
+6. **Continue (F5).**
+
+| Outcome | Verdict |
+|---|---|
+| VS **breaks again on the first `target.Value = 100` write** (with no data BP you set) | ✅ **Rung 1b PASS** — managed data breakpoints are reachable programmatically from an IDE-level component. The feature is real. |
+| No break on the write; loop runs to completion | ❌ check the log — the step-by-step trace says exactly where it failed (evaluate / GetDataBreakpointInfo / Create / Enable error code). |
+
+7. **Send me `%TEMP%\ConcordSpike-observe.log`** either way — on success it shows `ARMED OK` then a
+   `DATA BREAKPOINT HIT`; on failure it pinpoints the failing call.
+
+## Rung 2 — productize (only after 1b is green)
+
+Wire this into the real extension: a model-facing `vs_set_data_breakpoint` tool that takes an
+expression, arms it through this path, and surfaces the break via the existing await-break engine.
+No `DkmCustomMessage` IPC needed (single IDE component), so it folds into the current architecture.
 
 ## Uninstall
 

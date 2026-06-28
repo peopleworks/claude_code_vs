@@ -16,30 +16,27 @@ namespace DataBpTarget
     {
         private static void Main()
         {
-            // 'target' is a local so it shows up in the Locals window; expand it and set the data
-            // breakpoint on its Value field. The local keeps the object rooted for the whole loop.
+            // 'target' is a local (shows in Locals; keeps the object rooted). At the breakpoint
+            // below, the spike component evaluates "target.Value" and arms a data breakpoint on it.
             var target = new Watcher();
 
             Console.WriteLine($"DataBpTarget pid={Process.GetCurrentProcess().Id}");
-            Console.WriteLine("At the Debugger.Break() below: in Locals, expand 'target', right-click");
-            Console.WriteLine("'Value' -> Break When Value Changes. Then continue - each write should trip it.");
+            Console.WriteLine("Set a NORMAL breakpoint (F9) on the line marked >>> BREAKPOINT <<< below,");
+            Console.WriteLine("then continue (F5). The spike arms a data breakpoint on target.Value at that");
+            Console.WriteLine("stop - so the FIRST loop write should break with no data BP set by you.");
 
-            // STOP POINT: set the data breakpoint on target.Value here, then continue.
-            Debugger.Break();
+            Thread.Sleep(50);   // >>> BREAKPOINT <<<  (set a normal F9 breakpoint on THIS line)
 
             for (int i = 1; i <= 10; i++)
             {
-                target.Value = i * 100L;                     // <-- writes to the watched instance field
+                target.Value = i * 100L;                     // <-- a write here should trip the armed data BP
                 Console.WriteLine($"target.Value = {target.Value}");
                 Thread.Sleep(1000);
             }
 
-            Console.WriteLine("done");
-            Console.WriteLine("(press Enter to exit)");
+            Console.WriteLine("done (press Enter to exit)");
             Console.ReadLine();
-
-            // keep the local provably alive to the end so the JIT can't drop it early
-            GC.KeepAlive(target);
+            GC.KeepAlive(target);   // keep the local provably alive to the end
         }
     }
 }
