@@ -151,16 +151,24 @@ namespace ConcordSpike
                 process, UserDataBpSourceId, compilerId, thread, false, info.Identifier, (int)info.Size, null);
             Log.Line("  created DkmPendingDataBreakpoint; enabling (the IDE-level Enable)...");
 
-            int enableError = 0;
+            // Enable is an IDE-level (>100,000) op whose completion must be re-dispatched back onto
+            // THIS event thread. Driving it with the synchronous Execute() pump parks the very thread
+            // the reply needs -> self-deadlock until a ~67s timeout, surfaced as
+            // E_XAPI_COMPLETION_ROUTINE_RELEASED (0x8EDE000C). Use BeginExecution(): it returns
+            // immediately, and the completion routine fires asynchronously once we return from the
+            // notification and the dispatcher is free. (Same "issue -> await, never block the
+            // dispatcher" discipline as DebuggerDriver.)
+            _armed = true;   // one-shot: set before issuing so a re-entrant hit can't double-arm
             DkmWorkList wl2 = DkmWorkList.Create(null);
-            pending.Enable(wl2, ar => { enableError = ar.ErrorCode; });
-            wl2.Execute();
-            Log.Line("  Enable: errorCode=" + enableError + (enableError == 0 ? "" : " (0x" + enableError.ToString("X8") + ")"));
-
-            _armed = true;
-            Log.Line(enableError == 0
-                ? ">>> ARMED OK. Continue - a write to " + OwnerExpression + "." + FieldName + " should now break with NO user data BP."
-                : ">>> Enable returned an error; arming likely failed.");
+            pending.Enable(wl2, ar =>
+            {
+                int e = ar.ErrorCode;
+                Log.Line(e == 0
+                    ? ">>> ARMED OK (async). A write to " + OwnerExpression + "." + FieldName + " should now break with NO user data BP."
+                    : ">>> Enable failed async: errorCode=" + e + " (0x" + e.ToString("X8") + ")");
+            });
+            wl2.BeginExecution();
+            Log.Line("  Enable issued (async, non-blocking); returning from notification.");
         }
 
         // ---------- observation: a DATA breakpoint hit (UI-set OR our armed one) ----------
