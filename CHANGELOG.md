@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6.0 - 2026-06-27
+
+ClrMD memory / GC / ThreadPool diagnostics — four new read tools on the same out-of-process worker. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+
+### Features
+
+- **`vs_heap_stats`** — memory snapshot: top managed types by total bytes (count + size), bytes per GC generation (gen0/1/2/LOH/POH), GC mode (server/workstation, regions, background), GC-handle counts by kind, and the finalizer-queue size + top finalizable types. The "what's using memory / what looks off" overview.
+- **`vs_threadpool`** — ThreadPool health: worker counts (min/max/existing/busy/goal), queued work-item backlog, and a `starved` flag. Diagnoses the classic "async app hangs but nothing is deadlocked" bug — pool threads blocked (often sync-over-async) while work piles up. Pair with `vs_async_stacks`.
+- **`vs_gc_roots`** — "why is this object alive?": give a type name or `0x`-address → the retention path from a GC root to an instance (each frame references the next), with `rootKind` (static field / thread-stack local / strong-or-pinned handle / finalizer queue). The leak root-cause tool.
+- **`vs_heap_diff`** — leak finder: the first call baselines the heap; later calls report what GREW (per-type count/byte deltas, biggest first). A type climbing across repeated calls is the leak; then `vs_gc_roots` it. `reset` starts a fresh baseline.
+
+### Notes
+
+- **29** `vs-debug` tools total (14 read, ungated + 15 drive, gated). All four new tools are ungated reads on the existing out-of-process `ClrMdWorker.exe` (the snapshot is a `PssCaptureSnapshot` fork, so it coexists with the live VS session) — no new in-proc binding risk.
+- New `demo/MemLoad` fixture leaks `byte[]` and starves the threadpool, exercising all four end-to-end.
+- ClrMD heap walks (stats/roots/diff) can take longer than a lock read; the worker is given a 60 s budget and caps large enumerations with a `{truncated:true}` marker.
+- Managed (.NET) only; threadpool stats need a .NET 6+ target. x64 targets.
+- Tested against `claude` 2.1.191.
+
 ## 1.5.0 - 2026-06-27
 
 ClrMD-powered structured concurrency analysis: exact lock ownership and logical async call stacks, run **out-of-process** so they coexist with the live VS debug session. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
@@ -13,7 +32,7 @@ ClrMD-powered structured concurrency analysis: exact lock ownership and logical 
 
 - **Out-of-process by design.** ClrMD can't load in-proc in devenv — ClrMD 4.0 binds `System.Collections.Immutable` 10.0.0.7, but devenv ships its own Immutable versions and unifies them through a binding policy an in-proc extension can't override (`MissingMethodException` on `DataTarget.get_ClrVersions`). So a bundled **`ClrMdWorker.exe`** (net48/x64, with its own `.exe.config`) takes the snapshot in a separate process and returns JSON; the extension shells out and parses it. The snapshot is a `PssCaptureSnapshot` **fork**, so it reads a clone and **coexists** with the live VS debug session (verified at a Break All — VS continues cleanly).
 - **25** `vs-debug` tools total (10 read, ungated + 15 drive, gated). Both new tools are ungated reads.
-- New `spike-clrmd/` Step-0 probe (proved the snapshot approach end-to-end against a VS-attached session).
+- The snapshot/VS-coexistence approach was proven end-to-end against a live VS-attached session before integration.
 - Managed (.NET) only; x64 targets (the worker matches devenv's bitness; an x86 target would need an out-of-process x86 helper — future).
 - Tested against `claude` 2.1.191.
 

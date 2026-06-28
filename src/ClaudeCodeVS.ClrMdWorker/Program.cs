@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Microsoft.Diagnostics.Runtime;
 using Newtonsoft.Json;
@@ -25,6 +26,10 @@ namespace ClrMdWorker
                 {
                     case "waitchains": result = ReadWaitChains(pid); break;
                     case "asyncstacks": result = ReadAsyncStacks(pid); break;
+                    case "heapstats": result = ReadHeapStats(pid); break;
+                    case "threadpool": result = ReadThreadPool(pid); break;
+                    case "roots": result = ReadRoots(pid, args.Length > 2 ? args[2] : ""); break;
+                    case "heapdiff": result = ReadHeapDiff(pid, args.Length > 2 ? args[2] : ""); break;
                     default: result = new JObject { ["error"] = $"unknown command '{args[0]}'" }; break;
                 }
                 Emit(result);
@@ -305,6 +310,419 @@ namespace ClrMdWorker
                 return owner.Length > 0 ? owner.Replace('+', '.') + "." + method : method;
             }
             return smTypeName;
+        }
+
+        // ===== Memory / GC diagnostics =====
+
+        private sealed class TypeStat { public ClrType Type; public long Count; public ulong Bytes; }
+
+        private static string GenName(Generation g)
+        {
+            switch (g)
+            {
+                case Generation.Generation0: return "gen0";
+                case Generation.Generation1: return "gen1";
+                case Generation.Generation2: return "gen2";
+                case Generation.Large: return "loh";
+                case Generation.Pinned: return "poh";
+                case Generation.Frozen: return "frozen";
+                default: return "unknown";
+            }
+        }
+
+        // heap_stats: top types by bytes + per-generation sizes + GC mode + finalizer queue + handle kinds.
+        private static JObject ReadHeapStats(int pid)
+        {
+            using (DataTarget dt = DataTarget.CreateSnapshotAndAttach(pid))
+            {
+                ClrInfo clrInfo = dt.ClrVersions.FirstOrDefault();
+                if (clrInfo == null)
+                    return new JObject { ["error"] = "no CLR found in target (managed process? host/target bitness must match)" };
+
+                using (ClrRuntime runtime = clrInfo.CreateRuntime())
+                {
+                    ClrHeap heap = runtime.Heap;
+
+                    // single heap walk: type stats + generation bytes
+                    var counts = new Dictionary<ulong, TypeStat>();
+                    var genBytes = new Dictionary<string, ulong>();
+                    long totalObjs = 0; ulong totalBytes = 0; long scanned = 0; bool truncated = false;
+                    foreach (ClrSegment seg in heap.Segments)
+                    {
+                        foreach (ClrObject obj in seg.EnumerateObjects())
+                        {
+                            if (!obj.IsValid || obj.Type == null) continue;
+                            if (scanned++ > 5_000_000) { truncated = true; break; }
+                            ulong mt = obj.Type.MethodTable;
+                            if (!counts.TryGetValue(mt, out TypeStat ts)) counts[mt] = ts = new TypeStat { Type = obj.Type };
+                            ts.Count++; ts.Bytes += obj.Size;
+                            totalObjs++; totalBytes += obj.Size;
+                            string g = GenName(seg.GetGeneration(obj.Address));
+                            genBytes[g] = genBytes.TryGetValue(g, out ulong gb) ? gb + obj.Size : obj.Size;
+                        }
+                        if (truncated) break;
+                    }
+
+                    var topTypes = new JArray();
+                    foreach (TypeStat ts in counts.Values.OrderByDescending(t => t.Bytes).Take(40))
+                        topTypes.Add(new JObject { ["type"] = ts.Type.Name ?? "<unknown>", ["count"] = ts.Count, ["bytes"] = ts.Bytes });
+
+                    var generations = new JObject();
+                    foreach (var kv in genBytes) generations[kv.Key] = kv.Value;
+
+                    var gc = new JObject { ["server"] = heap.IsServer, ["heapCount"] = heap.SubHeaps.Length };
+                    ClrSubHeap sh = heap.SubHeaps.FirstOrDefault();
+                    if (sh != null) { gc["backgroundGC"] = sh.HasBackgroundGC; gc["regions"] = sh.HasRegions; gc["pinnedObjectHeap"] = sh.HasPinnedObjectHeap; }
+
+                    var handleCounts = new Dictionary<string, long>();
+                    long handleScan = 0;
+                    foreach (ClrHandle h in runtime.EnumerateHandles())
+                    {
+                        if (handleScan++ > 2_000_000) break;
+                        string k = h.HandleKind.ToString();
+                        handleCounts[k] = handleCounts.TryGetValue(k, out long hc) ? hc + 1 : 1;
+                    }
+                    var handles = new JObject();
+                    foreach (var kv in handleCounts.OrderByDescending(k => k.Value)) handles[kv.Key] = kv.Value;
+
+                    long finalizable = 0; var finBy = new Dictionary<ulong, TypeStat>(); long finScan = 0;
+                    foreach (ClrObject o in heap.EnumerateFinalizableObjects())
+                    {
+                        if (finScan++ > 2_000_000) break;
+                        finalizable++;
+                        if (o.Type == null) continue;
+                        ulong mt = o.Type.MethodTable;
+                        if (!finBy.TryGetValue(mt, out TypeStat ts)) finBy[mt] = ts = new TypeStat { Type = o.Type };
+                        ts.Count++;
+                    }
+                    var finTop = new JArray();
+                    foreach (TypeStat ts in finBy.Values.OrderByDescending(t => t.Count).Take(10))
+                        finTop.Add(new JObject { ["type"] = ts.Type.Name ?? "<unknown>", ["count"] = ts.Count });
+
+                    var result = new JObject
+                    {
+                        ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}",
+                        ["gc"] = gc,
+                        ["totalObjects"] = totalObjs,
+                        ["totalBytes"] = totalBytes,
+                        ["generations"] = generations,
+                        ["topTypes"] = topTypes,
+                        ["handles"] = handles,
+                        ["finalizable"] = new JObject { ["count"] = finalizable, ["topTypes"] = finTop },
+                        ["note"] = "Top types by total bytes (live heap walk). generations = bytes per GC generation (loh/poh = large/pinned object heaps). finalizable = objects still registered for finalization (a large/growing single type points at a stuck finalizer or undisposed resources). handles grouped by kind (a Pinned/AsyncPinned explosion = fragmentation; Strong/Dependent growth = a managed leak). Use vs_gc_roots on a suspect type to see what's keeping it alive, vs_heap_diff to see what's growing.",
+                    };
+                    if (truncated) result["truncated"] = true;
+                    return result;
+                }
+            }
+        }
+
+        // threadpool: Portable ThreadPool worker counts + queue backlog + starvation signal (.NET 6+ targets).
+        private static JObject ReadThreadPool(int pid)
+        {
+            using (DataTarget dt = DataTarget.CreateSnapshotAndAttach(pid))
+            {
+                ClrInfo clrInfo = dt.ClrVersions.FirstOrDefault();
+                if (clrInfo == null)
+                    return new JObject { ["error"] = "no CLR found in target (managed process? host/target bitness must match)" };
+
+                using (ClrRuntime runtime = clrInfo.CreateRuntime())
+                {
+                    var result = new JObject { ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}" };
+                    ClrType ptp = runtime.BaseClassLibrary?.GetTypeByName("System.Threading.PortableThreadPool");
+                    if (ptp == null) { result["note"] = "target has no PortableThreadPool (not .NET 6+ Core) — threadpool stats unavailable."; return result; }
+
+                    ClrAppDomain dom = runtime.AppDomains.FirstOrDefault();
+
+                    // Locate the PortableThreadPool singleton: static field, else heap scan.
+                    ClrObject pool = default;
+                    ClrStaticField instField = ptp.GetStaticFieldByName("ThreadPoolInstance");
+                    if (instField != null && dom != null) { try { pool = instField.ReadObject(dom); } catch { } }
+                    if (!pool.IsValid)
+                        foreach (ClrObject o in runtime.Heap.EnumerateObjects()) { if (o.Type == ptp) { pool = o; break; } }
+                    if (!pool.IsValid) { result["error"] = "could not locate PortableThreadPool instance"; return result; }
+
+                    short min = ReadShort(pool, "_minThreads"), max = ReadShort(pool, "_maxThreads");
+                    short processing = 0, existing = 0, goal = 0; int requested = 0;
+                    if (pool.Type?.GetFieldByName("_separated") != null)
+                    {
+                        ClrValueType sep = pool.ReadValueTypeField("_separated");
+                        if (sep.Type?.GetFieldByName("numRequestedWorkers") != null) requested = sep.ReadField<int>("numRequestedWorkers");
+                        if (sep.Type?.GetFieldByName("counts") != null)
+                        {
+                            ClrValueType cv = sep.ReadValueTypeField("counts");
+                            if (cv.Type?.GetFieldByName("_data") != null)
+                            {
+                                ulong data = cv.ReadField<ulong>("_data");
+                                processing = (short)(data & 0xFFFF);
+                                existing = (short)((data >> 16) & 0xFFFF);
+                                goal = (short)((data >> 32) & 0xFFFF);
+                            }
+                        }
+                    }
+
+                    // Work-queue backlog: ThreadPool.s_workQueue (static), else heap scan.
+                    ClrObject wq = default;
+                    ClrType tpType = runtime.BaseClassLibrary?.GetTypeByName("System.Threading.ThreadPool");
+                    ClrStaticField wqField = tpType?.GetStaticFieldByName("s_workQueue");
+                    if (wqField != null && dom != null) { try { wq = wqField.ReadObject(dom); } catch { } }
+                    if (!wq.IsValid)
+                        foreach (ClrObject o in runtime.Heap.EnumerateObjects()) { if (o.Type?.Name == "System.Threading.ThreadPoolWorkQueue") { wq = o; break; } }
+                    long backlog = wq.IsValid ? CountWorkQueue(wq) : 0;
+
+                    bool starved = backlog > existing && processing >= goal && goal < max;
+
+                    result["minThreads"] = min;
+                    result["maxThreads"] = max;
+                    result["existingThreads"] = existing;
+                    result["busyThreads"] = processing;
+                    result["threadsGoal"] = goal;
+                    result["requestedWorkers"] = requested;
+                    result["queuedWorkItems"] = backlog;
+                    result["starved"] = starved;
+                    result["note"] = "starved = queued work exceeds existing worker threads while all goal-threads are busy and the goal hasn't grown to max. The pool injects ~1 thread/500ms, so a sustained backlog with a pinned thread count is starvation — classically sync-over-async blocking pool threads. Pair with vs_async_stacks to see what the pool threads are stuck on. Confirm borderline cases with a second sample.";
+                    return result;
+                }
+            }
+        }
+
+        private static short ReadShort(ClrObject o, string field)
+        {
+            try { return o.Type?.GetFieldByName(field) != null ? o.ReadField<short>(field) : (short)0; } catch { return 0; }
+        }
+
+        private static long CountWorkQueue(ClrObject wq)
+        {
+            long n = 0;
+            if (TryObjField(wq, "highPriorityWorkItems", out ClrObject hp)) n += CountConcurrentQueue(hp);
+            if (TryObjField(wq, "workItems", out ClrObject wi)) n += CountConcurrentQueue(wi);
+            if (TryObjField(wq, "_assignableWorkItemQueues", out ClrObject aq) && aq.IsArray)
+            {
+                ClrArray arr = aq.AsArray();
+                for (int i = 0; i < arr.Length; i++) { ClrObject q = arr.GetObjectValue(i); if (q.IsValid && !q.IsNull) n += CountConcurrentQueue(q); }
+            }
+            return n;
+        }
+
+        // ConcurrentQueue<object> length: walk _head -> _slots[].Item -> _nextSegment (slightly over-counts; fine).
+        private static long CountConcurrentQueue(ClrObject q)
+        {
+            long n = 0;
+            if (!TryObjField(q, "_head", out ClrObject seg)) return 0;
+            int guard = 0;
+            while (seg.IsValid && !seg.IsNull && guard++ < 100000)
+            {
+                if (TryObjField(seg, "_slots", out ClrObject slots) && slots.IsArray)
+                {
+                    ClrArray sa = slots.AsArray();
+                    for (int i = 0; i < sa.Length; i++)
+                    {
+                        ClrValueType slot = sa.GetStructValue(i);
+                        ClrObject item = slot.ReadObjectField("Item");
+                        if (item.IsValid && !item.IsNull) n++;
+                    }
+                }
+                if (!TryObjField(seg, "_nextSegment", out ClrObject next)) break;
+                seg = next;
+            }
+            return n;
+        }
+
+        // roots: "why is this alive?" — resolve a type name or 0x-address to a target object, then BFS from
+        // every GC root (heap roots AND per-thread stack roots) to it, returning the retention path.
+        private static JObject ReadRoots(int pid, string target)
+        {
+            if (string.IsNullOrWhiteSpace(target))
+                return new JObject { ["error"] = "usage: roots <pid> <typeName|0xaddress>" };
+
+            using (DataTarget dt = DataTarget.CreateSnapshotAndAttach(pid))
+            {
+                ClrInfo clrInfo = dt.ClrVersions.FirstOrDefault();
+                if (clrInfo == null)
+                    return new JObject { ["error"] = "no CLR found in target (managed process? host/target bitness must match)" };
+
+                using (ClrRuntime runtime = clrInfo.CreateRuntime())
+                {
+                    ClrHeap heap = runtime.Heap;
+                    ulong targetAddr = 0; long instanceCount = 0; string targetType = null;
+
+                    if (target.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { targetAddr = Convert.ToUInt64(target.Substring(2), 16); } catch { }
+                        if (targetAddr == 0) return new JObject { ["error"] = $"bad address '{target}'" };
+                        targetType = heap.GetObject(targetAddr).Type?.Name;
+                    }
+                    else
+                    {
+                        long scan = 0;
+                        foreach (ClrObject o in heap.EnumerateObjects())
+                        {
+                            if (scan++ > 5_000_000) break;
+                            if (o.Type == null) continue;
+                            string name = o.Type.Name;
+                            if (name == null) continue;
+                            if (name == target || name.IndexOf(target, StringComparison.Ordinal) >= 0)
+                            {
+                                if (targetAddr == 0) { targetAddr = o.Address; targetType = name; }
+                                if (++instanceCount >= 200000) break;
+                            }
+                        }
+                        if (targetAddr == 0) return new JObject { ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}", ["note"] = $"no live objects of type '{target}' found." };
+                    }
+
+                    var (path, rootKind) = FindRetentionPath(runtime, targetAddr);
+
+                    var result = new JObject
+                    {
+                        ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}",
+                        ["target"] = $"0x{targetAddr:x}",
+                        ["targetType"] = targetType ?? "<unknown>",
+                    };
+                    if (instanceCount > 0) result["instanceCount"] = instanceCount;
+
+                    if (path == null)
+                    {
+                        result["rooted"] = false;
+                        result["note"] = "No retention path from a GC root — the object is unrooted (eligible for collection / already dead), or the search hit its ceiling.";
+                    }
+                    else
+                    {
+                        result["rooted"] = true;
+                        result["rootKind"] = rootKind;
+                        var arr = new JArray();
+                        foreach (var (a, ty) in path) arr.Add(new JObject { ["address"] = $"0x{a:x}", ["type"] = ty });
+                        result["retentionPath"] = arr;
+                        result["note"] = "Retention path: GC root (first frame) → … → target (last frame); each frame holds a reference to the next, so the chain is *why* the target can't be collected. rootKind names the anchor (StaticVar = a static field, Stack = a thread local, StrongHandle/Pinned = a GC handle, FinalizerQueue = pending finalization).";
+                    }
+                    return result;
+                }
+            }
+        }
+
+        // BFS from all roots (heap + stacks) to targetAddr; returns the path (root→target) + the root's kind.
+        private static (List<(ulong addr, string type)> path, string rootKind) FindRetentionPath(ClrRuntime runtime, ulong targetAddr)
+        {
+            ClrHeap heap = runtime.Heap;
+            var visited = new HashSet<ulong>();
+            var parent = new Dictionary<ulong, ulong>();
+            var rootKindOf = new Dictionary<ulong, string>();
+            var queue = new Queue<ulong>();
+
+            void Seed(ClrObject o, string kind)
+            {
+                if (o.IsNull || o.Address == 0 || !visited.Add(o.Address)) return;
+                parent[o.Address] = 0; rootKindOf[o.Address] = kind; queue.Enqueue(o.Address);
+            }
+
+            foreach (ClrRoot r in heap.EnumerateRoots()) Seed(r.Object, r.RootKind.ToString());
+            foreach (ClrThread t in runtime.Threads)
+                foreach (ClrStackRoot sr in t.EnumerateStackRoots()) Seed(sr.Object, "Stack");
+
+            bool found = visited.Contains(targetAddr);
+            long steps = 0;
+            while (!found && queue.Count > 0)
+            {
+                ulong cur = queue.Dequeue();
+                if (steps++ > 20_000_000) break;
+                ClrObject obj = heap.GetObject(cur);
+                if (!obj.IsValid || obj.Type == null || !obj.Type.ContainsPointers) continue;
+                foreach (ulong child in obj.EnumerateReferenceAddresses())
+                {
+                    if (child == 0 || !visited.Add(child)) continue;
+                    parent[child] = cur;
+                    queue.Enqueue(child);
+                    if (child == targetAddr) { found = true; break; }
+                }
+            }
+
+            if (!parent.ContainsKey(targetAddr)) return (null, null);
+
+            var path = new List<(ulong, string)>();
+            var guard = new HashSet<ulong>();
+            ulong a = targetAddr;
+            while (guard.Add(a))
+            {
+                path.Add((a, heap.GetObject(a).Type?.Name ?? "<unknown>"));
+                if (!parent.TryGetValue(a, out ulong p) || p == 0) break;
+                a = p;
+            }
+            path.Reverse();
+            string rootKind = rootKindOf.TryGetValue(path[0].Item1, out string rk) ? rk : "?";
+            return (path, rootKind);
+        }
+
+        // heapdiff: first call (no baseline file) captures per-type {count,bytes} to baselinePath; later
+        // calls diff the current heap against it and report what GREW (the leak finder). Baseline persists.
+        private static JObject ReadHeapDiff(int pid, string baselinePath)
+        {
+            if (string.IsNullOrWhiteSpace(baselinePath))
+                return new JObject { ["error"] = "usage: heapdiff <pid> <baselinePath>" };
+
+            using (DataTarget dt = DataTarget.CreateSnapshotAndAttach(pid))
+            {
+                ClrInfo clrInfo = dt.ClrVersions.FirstOrDefault();
+                if (clrInfo == null)
+                    return new JObject { ["error"] = "no CLR found in target (managed process? host/target bitness must match)" };
+
+                using (ClrRuntime runtime = clrInfo.CreateRuntime())
+                {
+                    ClrHeap heap = runtime.Heap;
+                    var cur = new Dictionary<string, long[]>(); // type -> [count, bytes]
+                    long scanned = 0; bool truncated = false;
+                    foreach (ClrObject obj in heap.EnumerateObjects())
+                    {
+                        if (!obj.IsValid || obj.Type == null) continue;
+                        if (scanned++ > 5_000_000) { truncated = true; break; }
+                        string name = obj.Type.Name ?? "<unknown>";
+                        if (!cur.TryGetValue(name, out long[] e)) cur[name] = e = new long[2];
+                        e[0] += 1; e[1] += (long)obj.Size;
+                    }
+
+                    if (!File.Exists(baselinePath))
+                    {
+                        var bo = new JObject();
+                        foreach (var kv in cur) bo[kv.Key] = new JArray(kv.Value[0], kv.Value[1]);
+                        try { File.WriteAllText(baselinePath, bo.ToString(Formatting.None)); }
+                        catch (Exception e) { return new JObject { ["error"] = $"could not write baseline: {e.Message}" }; }
+                        return new JObject
+                        {
+                            ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}",
+                            ["mode"] = "baseline",
+                            ["types"] = cur.Count,
+                            ["totalObjects"] = cur.Values.Sum(v => v[0]),
+                            ["note"] = "Baseline captured. Let the process run, then call vs_heap_diff again to see what grew.",
+                        };
+                    }
+
+                    JObject baseline;
+                    try { baseline = JObject.Parse(File.ReadAllText(baselinePath)); }
+                    catch (Exception e) { return new JObject { ["error"] = $"could not read baseline: {e.Message}" }; }
+
+                    var grew = new List<(string type, long dCount, long dBytes)>();
+                    foreach (var kv in cur)
+                    {
+                        long bCount = 0, bBytes = 0;
+                        if (baseline[kv.Key] is JArray ba && ba.Count >= 2) { bCount = (long)ba[0]; bBytes = (long)ba[1]; }
+                        long dCount = kv.Value[0] - bCount;
+                        long dBytes = kv.Value[1] - bBytes;
+                        if (dCount != 0 || dBytes != 0) grew.Add((kv.Key, dCount, dBytes));
+                    }
+
+                    var arr = new JArray();
+                    foreach (var g in grew.OrderByDescending(x => x.dBytes).Take(40))
+                        arr.Add(new JObject { ["type"] = g.type, ["countDelta"] = g.dCount, ["bytesDelta"] = g.dBytes });
+
+                    var result = new JObject
+                    {
+                        ["clr"] = $"{clrInfo.Flavor} {clrInfo.Version}",
+                        ["mode"] = "diff",
+                        ["grew"] = arr,
+                        ["note"] = "Per-type growth since the baseline (sorted by bytes gained; negatives shrank). A type that keeps climbing across repeated diffs is the leak. The baseline is preserved — call again to keep watching (pass reset to re-baseline). Then vs_gc_roots the growing type to see what's holding it.",
+                    };
+                    if (truncated) result["truncated"] = true;
+                    return result;
+                }
+            }
         }
     }
 }

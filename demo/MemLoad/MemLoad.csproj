@@ -1,11 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Tiny AB-BA deadlock to point the probe at (incl. the make-or-break VS-attached test). -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <PlatformTarget>x64</PlatformTarget>   <!-- match the x64 probe -->
+    <PlatformTarget>x64</PlatformTarget>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <AssemblyName>Deadlock</AssemblyName>
+    <AssemblyName>MemLoad</AssemblyName>
   </PropertyGroup>
 </Project>
