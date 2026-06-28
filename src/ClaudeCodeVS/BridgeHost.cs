@@ -261,6 +261,10 @@ internal sealed class BridgeHost : IDisposable
         yield return new VsListProcessesTool();  // attach targets (debug real running apps)
         yield return new VsWaitChainsTool();     // ClrMD snapshot: structured lock ownership + deadlock suspects
         yield return new VsAsyncStacksTool();    // ClrMD snapshot: logical async call-stack reconstruction
+        yield return new VsHeapStatsTool();      // ClrMD snapshot: heap composition + GC/handle/finalizer health
+        yield return new VsThreadPoolTool();     // ClrMD snapshot: threadpool counts + starvation
+        yield return new VsGcRootsTool();        // ClrMD snapshot: retention path (why is X alive)
+        yield return new VsHeapDiffTool();       // ClrMD snapshot: leak finder (baseline vs now)
         // Phase 3 - drive (each gated behind BridgeStatus.AllowDebuggerDrive).
         yield return new VsContinueTool(driver);
         yield return new VsStepOverTool(driver);

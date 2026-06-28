@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
@@ -16,13 +17,23 @@ namespace ClaudeCodeVs.Debugging;
 /// </summary>
 internal static class ClrMdReader
 {
-    private const int TimeoutMs = 30000;
+    private const int TimeoutMs = 60000;   // heap walks (heapstats/roots/heapdiff) can take longer than a lock read
 
     public static JObject ReadWaitChains(int pid) => RunWorker("waitchains", pid);
-
     public static JObject ReadAsyncStacks(int pid) => RunWorker("asyncstacks", pid);
+    public static JObject ReadHeapStats(int pid) => RunWorker("heapstats", pid);
+    public static JObject ReadThreadPool(int pid) => RunWorker("threadpool", pid);
+    public static JObject ReadGcRoots(int pid, string target) => RunWorker("roots", pid, target);
 
-    private static JObject RunWorker(string command, int pid)
+    public static JObject ReadHeapDiff(int pid, bool reset)
+    {
+        // Baseline persists between calls so growth can be measured; the extension owns the temp path.
+        string baselinePath = Path.Combine(Path.GetTempPath(), $"clrmd-heapbaseline-{pid}.json");
+        if (reset) { try { if (File.Exists(baselinePath)) File.Delete(baselinePath); } catch { } }
+        return RunWorker("heapdiff", pid, baselinePath);
+    }
+
+    private static JObject RunWorker(string command, int pid, params string[] extra)
     {
         string dir = Path.GetDirectoryName(typeof(ClrMdReader).Assembly.Location) ?? "";
         string exe = Path.Combine(dir, "ClrMdWorker", "ClrMdWorker.exe");
@@ -34,7 +45,7 @@ internal static class ClrMdReader
             var psi = new ProcessStartInfo
             {
                 FileName = exe,
-                Arguments = $"{command} {pid}",
+                Arguments = $"{command} {pid}" + (extra != null && extra.Length > 0 ? " " + string.Join(" ", extra.Select(e => "\"" + (e ?? "") + "\"")) : ""),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

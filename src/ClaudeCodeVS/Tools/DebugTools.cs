@@ -399,3 +399,118 @@ internal sealed class VsAsyncStacksTool : IIdeTool
         return result;
     }
 }
+
+/// <summary>
+/// Shared plumbing for the ClrMD snapshot tools: resolve the debuggee PID on the UI thread, run the
+/// snapshot OFF it (Task.Run - the worker spawns a process), then log + record stats on the UI thread.
+/// </summary>
+internal static class ClrMdToolHelper
+{
+    public static async Task<object> RunAsync(string toolName, JToken args, CancellationToken ct, System.Func<int, JObject> read, System.Func<JObject, string> summary)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var (mode, pids) = DebuggerReader.DebugTarget();
+        if (pids.Count == 0)
+        {
+            Log.Info($"{toolName} -> mode={mode}, no debuggee");
+            Ui.BridgeStatus.RecordDebugInspect();
+            return new JObject { ["mode"] = mode, ["note"] = "No debugged process. Start or attach a debug session first." };
+        }
+        int pid = (int?)args["pid"] ?? pids[0];
+
+        JObject result = await Task.Run(() => read(pid), ct);
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        result["mode"] = mode;
+        result["pid"] = pid;
+        Log.Info(result["error"] != null
+            ? $"{toolName}(pid={pid}) -> error={(string?)result["error"]}"
+            : $"{toolName}(pid={pid}) -> {summary(result)}");
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+
+    /// <summary>An {pid?} object schema, plus any extra named string/boolean properties.</summary>
+    public static JObject PidSchema(params (string name, string type, string desc)[] extra)
+    {
+        var props = new JObject { ["pid"] = new JObject { ["type"] = "integer", ["description"] = "Process id to snapshot; omit to use the first debugged process." } };
+        foreach (var (name, type, desc) in extra) props[name] = new JObject { ["type"] = type, ["description"] = desc };
+        return new JObject { ["type"] = "object", ["properties"] = props };
+    }
+}
+
+/// <summary>vs_heap_stats - heap composition + GC/handle/finalizer health (ClrMD snapshot).</summary>
+internal sealed class VsHeapStatsTool : IIdeTool
+{
+    public string Name => "vs_heap_stats";
+    public string Description =>
+        "Memory snapshot via ClrMD: top managed types by total bytes (count + size), bytes per GC generation "
+        + "(gen0/1/2/LOH/POH), GC mode (server/workstation, regions, background), GC-handle counts by kind, and the "
+        + "finalizer-queue size + top finalizable types. The 'what's using memory / what looks off' overview. Needs an "
+        + "active debug session; reads a fork, so it coexists with VS. Managed (.NET) only. Optional pid.";
+    public JToken Schema => ClrMdToolHelper.PidSchema();
+    public Task<object> InvokeAsync(JToken args, CancellationToken ct) =>
+        ClrMdToolHelper.RunAsync("vs_heap_stats", args, ct, ClrMdReader.ReadHeapStats,
+            r => $"{(r["topTypes"] as JArray)?.Count ?? 0} types, {r["totalBytes"]} bytes");
+}
+
+/// <summary>vs_threadpool - ThreadPool worker counts + queue backlog + starvation flag (ClrMD snapshot).</summary>
+internal sealed class VsThreadPoolTool : IIdeTool
+{
+    public string Name => "vs_threadpool";
+    public string Description =>
+        "ThreadPool health via ClrMD: worker thread counts (min/max/existing/busy/goal), queued work-item backlog, and "
+        + "a 'starved' flag. Diagnoses the classic 'async app hangs but nothing is deadlocked' bug — every pool thread "
+        + "blocked (often sync-over-async) while work piles up in the queue. Pair with vs_async_stacks to see what the "
+        + "pool threads are stuck on. Needs an active session; .NET 6+ targets. Optional pid.";
+    public JToken Schema => ClrMdToolHelper.PidSchema();
+    public Task<object> InvokeAsync(JToken args, CancellationToken ct) =>
+        ClrMdToolHelper.RunAsync("vs_threadpool", args, ct, ClrMdReader.ReadThreadPool,
+            r => $"queued={r["queuedWorkItems"]}, busy={r["busyThreads"]}/{r["existingThreads"]}, starved={r["starved"]}");
+}
+
+/// <summary>vs_gc_roots - retention path ("why is this object alive?") via ClrMD snapshot.</summary>
+internal sealed class VsGcRootsTool : IIdeTool
+{
+    public string Name => "vs_gc_roots";
+    public string Description =>
+        "\"Why is this object still alive?\" via ClrMD: give a managed type name (e.g. 'MyApp.Session' or "
+        + "'System.Byte[]') or a 0x-address, and it returns the retention path from a GC root down to an instance — each "
+        + "frame holds a reference to the next, so the chain is what keeps it from being collected. rootKind names the "
+        + "anchor (static field, thread-stack local, strong/pinned handle, finalizer queue). The leak root-cause tool — "
+        + "use after vs_heap_stats / vs_heap_diff flags a suspect type. Needs an active session. Optional pid.";
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["target"] = new JObject { ["type"] = "string", ["description"] = "A managed type name (full or substring) or a 0x-prefixed object address to trace." },
+            ["pid"] = new JObject { ["type"] = "integer", ["description"] = "Process id; omit to use the first debugged process." },
+        },
+        ["required"] = new JArray("target"),
+    };
+    public Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        string target = (string?)args["target"] ?? "";
+        return ClrMdToolHelper.RunAsync("vs_gc_roots", args, ct, pid => ClrMdReader.ReadGcRoots(pid, target),
+            r => r["rooted"]?.Value<bool>() == true ? $"rooted via {r["rootKind"]}, {(r["retentionPath"] as JArray)?.Count ?? 0} hops" : "no path / not rooted");
+    }
+}
+
+/// <summary>vs_heap_diff - leak finder: baseline the heap, then report what grew (ClrMD snapshot).</summary>
+internal sealed class VsHeapDiffTool : IIdeTool
+{
+    public string Name => "vs_heap_diff";
+    public string Description =>
+        "Leak finder via ClrMD: the FIRST call captures a per-type heap baseline; later calls report what GREW since "
+        + "(per-type count/byte deltas, biggest first). A type that keeps climbing across repeated calls is the leak. The "
+        + "baseline persists across calls (per process) — pass reset=true to start fresh. Then vs_gc_roots the growing "
+        + "type to see what's holding it. Needs an active session. Optional pid.";
+    public JToken Schema => ClrMdToolHelper.PidSchema(("reset", "boolean", "Discard any existing baseline and capture a fresh one this call."));
+    public Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        bool reset = (bool?)args["reset"] ?? false;
+        return ClrMdToolHelper.RunAsync("vs_heap_diff", args, ct, pid => ClrMdReader.ReadHeapDiff(pid, reset),
+            r => (string?)r["mode"] == "baseline" ? $"baseline ({r["types"]} types)" : $"{(r["grew"] as JArray)?.Count ?? 0} types changed");
+    }
+}
