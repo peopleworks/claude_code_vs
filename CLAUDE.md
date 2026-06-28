@@ -25,7 +25,7 @@ If you ever find yourself adding an LLM API call, an agent loop, or a tool the C
 - `src/ClaudeCodeVS/Ui/` - dockable panel (BridgeStatus state, ClaudeToolWindowControl WPF, ReasonDialog).
 - `BridgeHost.cs` - wires everything together; owns the `/permission` handler and CLI launcher.
 - `spike/` - Phase 0 standalone console harness (net8.0), kept for protocol regression testing.
-- `src/ClaudeCodeVS.ClrMdWorker/` - out-of-process ClrMD worker exe (net48/x64): `waitchains`/`asyncstacks` commands emit JSON; bundled in the .vsix under `ClrMdWorker\` and shelled out by `Debugging/ClrMdReader.cs` (ClrMD can't load in-proc in devenv — Immutable binding conflict). `spike-clrmd/` - the Step-0 probe that proved the snapshot approach.
+- `src/ClaudeCodeVS.ClrMdWorker/` - out-of-process ClrMD worker exe (net48/x64): `waitchains`/`asyncstacks`/`heapstats`/`threadpool`/`roots`/`heapdiff` commands emit JSON; bundled in the .vsix under `ClrMdWorker\` and shelled out by `Debugging/ClrMdReader.cs` (ClrMD can't load in-proc in devenv — Immutable binding conflict). To iterate on a ClrMD read, run the worker exe directly against a target PID (no VS needed).
 
 ## Tech stack & hard constraints
 

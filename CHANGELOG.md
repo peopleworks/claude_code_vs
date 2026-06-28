@@ -32,7 +32,7 @@ ClrMD-powered structured concurrency analysis: exact lock ownership and logical 
 
 - **Out-of-process by design.** ClrMD can't load in-proc in devenv — ClrMD 4.0 binds `System.Collections.Immutable` 10.0.0.7, but devenv ships its own Immutable versions and unifies them through a binding policy an in-proc extension can't override (`MissingMethodException` on `DataTarget.get_ClrVersions`). So a bundled **`ClrMdWorker.exe`** (net48/x64, with its own `.exe.config`) takes the snapshot in a separate process and returns JSON; the extension shells out and parses it. The snapshot is a `PssCaptureSnapshot` **fork**, so it reads a clone and **coexists** with the live VS debug session (verified at a Break All — VS continues cleanly).
 - **25** `vs-debug` tools total (10 read, ungated + 15 drive, gated). Both new tools are ungated reads.
-- New `spike-clrmd/` Step-0 probe (proved the snapshot approach end-to-end against a VS-attached session).
+- The snapshot/VS-coexistence approach was proven end-to-end against a live VS-attached session before integration.
 - Managed (.NET) only; x64 targets (the worker matches devenv's bitness; an x86 target would need an out-of-process x86 helper — future).
 - Tested against `claude` 2.1.191.
 
