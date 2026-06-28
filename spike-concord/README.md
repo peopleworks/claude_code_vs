@@ -134,11 +134,36 @@ OnBoundBreakpointHit(thread)                                  // first normal br
 7. **Send me `%TEMP%\ConcordSpike-observe.log`** either way — on success it shows `ARMED OK` then a
    `DATA BREAKPOINT HIT`; on failure it pinpoints the failing call.
 
-## Rung 2 — productize (only after 1b is green)
+## VERDICT (banked 2026-06-28)
 
-Wire this into the real extension: a model-facing `vs_set_data_breakpoint` tool that takes an
-expression, arms it through this path, and surfaces the break via the existing await-break engine.
-No `DkmCustomMessage` IPC needed (single IDE component), so it folds into the current architecture.
+**PROVEN:** a managed data breakpoint ("break when value changes"), armed entirely from code in our
+IDE-level Concord component, **fires** — demonstrated across runs 0.4.0–0.6.0 (our minted token shows
+up as the `DkmRuntimeCustomDataBreakpoint` that breaks on the write). All the hard unknowns are
+retired:
+- VS 2026 loads an unsigned third-party Concord component (Rung 0).
+- The mechanism: managed data BP = `DkmRuntimeCustomDataBreakpoint` owned by MS's own
+  `MSCustomDataBreakpointManagerId` monitor; field binding minted by
+  `DkmSuccessEvaluationResult.GetDataBreakpointInfo()` on the **child** result of the owning object
+  (bare expressions fail — must drill owner → children → field).
+- The full public-API arm chain (evaluate → children → GetDataBreakpointInfo → Create → Enable).
+- `Enable` must be async (`BeginExecution`, not `Execute`) or it self-deadlocks ~67s →
+  `E_XAPI_COMPLETION_ROUTINE_RELEASED`.
+
+**KNOWN-REMAINING (the one wall left, deferred to Rung 2):** arming from inside
+`IDkmBoundBreakpointHitNotification` (the **event thread**, while stopped) leaves the async `Enable`
+completion undelivered — it never fires — and the dangling op crashes the debugger on continue. GC
+rooting did NOT fix it (ruled lifetime out). The fix is architectural: **arm from the request/IDE
+thread, not from a stop-event notification** — matching how real engines enroll/bind breakpoints
+(AD7 lifecycle: enroll once on the request side, rebind on module load, decoupled from break/run).
+
+## Rung 2 — productize (the real implementation)
+
+A model-facing `vs_set_data_breakpoint` tool on the `vs-debug` MCP server. The open design question
+the spike surfaced: **how the tool call (request/IDE side) triggers the arm inside the Concord
+component on the right thread** — likely the component exposes arming via a request-thread entry
+(e.g. a `DkmCustomMessage` from the extension, or arming wired into the resume/continue flow) rather
+than the event-thread hit notification this spike used. Then surface the resulting break through the
+existing await-break engine. Ship the Concord component (vsdconfig) inside the extension VSIX.
 
 ## Uninstall
 
