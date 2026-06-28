@@ -46,6 +46,14 @@ namespace ConcordSpike
         // One-shot: arm on the first normal breakpoint only.
         private static bool _armed;
 
+        // GC roots for the async Enable. The native engine does NOT root our managed work list or
+        // completion delegate across BeginExecution, so if a GC runs before Enable completes, the
+        // native completion callback lands on freed memory and crashes the debugger. Keep them
+        // alive until the completion routine fires, then release.
+        private static DkmWorkList _enableWl;
+        private static DkmPendingDataBreakpoint _enablePending;
+        private static DkmCompletionRoutine<DkmEnablePendingBreakpointAsyncResult> _enableCb;
+
         // ---------- Rung 0 canary ----------
         DkmStackWalkFrame[] IDkmCallStackFilter.FilterNextFrame(DkmStackContext stackContext, DkmStackWalkFrame input)
         {
@@ -159,16 +167,19 @@ namespace ConcordSpike
             // notification and the dispatcher is free. (Same "issue -> await, never block the
             // dispatcher" discipline as DebuggerDriver.)
             _armed = true;   // one-shot: set before issuing so a re-entrant hit can't double-arm
-            DkmWorkList wl2 = DkmWorkList.Create(null);
-            pending.Enable(wl2, ar =>
+            _enablePending = pending;
+            _enableWl = DkmWorkList.Create(null);
+            _enableCb = ar =>
             {
                 int e = ar.ErrorCode;
                 Log.Line(e == 0
                     ? ">>> ARMED OK (async). A write to " + OwnerExpression + "." + FieldName + " should now break with NO user data BP."
                     : ">>> Enable failed async: errorCode=" + e + " (0x" + e.ToString("X8") + ")");
-            });
-            wl2.BeginExecution();
-            Log.Line("  Enable issued (async, non-blocking); returning from notification.");
+                _enableWl = null; _enablePending = null; _enableCb = null;   // release roots
+            };
+            _enablePending.Enable(_enableWl, _enableCb);
+            _enableWl.BeginExecution();
+            Log.Line("  Enable issued (async, non-blocking, rooted); returning from notification.");
         }
 
         // ---------- observation: a DATA breakpoint hit (UI-set OR our armed one) ----------
