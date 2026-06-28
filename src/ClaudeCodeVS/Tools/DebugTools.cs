@@ -290,3 +290,112 @@ internal sealed class VsListProcessesTool : IIdeTool
         return result;
     }
 }
+
+/// <summary>
+/// vs_wait_chains - structured deadlock triage via a ClrMD process snapshot (not EnvDTE/stack-text).
+/// Reads a fork of the debuggee, so it coexists with VS owning the debug port. Runs the snapshot off the
+/// UI thread (it's slow and not a VS API); only the PID lookup is on the UI thread.
+/// </summary>
+internal sealed class VsWaitChainsTool : IIdeTool
+{
+    public string Name => "vs_wait_chains";
+    public string Description =>
+        "Deadlock triage via a ClrMD process SNAPSHOT (structured, not stack text): lists every HELD monitor "
+        + "with its owner thread + waiter count, every thread with the locks it holds and whether it's blocked "
+        + "(Monitor.Enter / Wait / Join), and 'deadlockSuspects' = threads that hold a lock AND are blocked "
+        + "entering a monitor (the cycle members). Needs an active debug session (a Break All first gives the "
+        + "cleanest read); it reads a fork, so it coexists with VS. Managed (.NET) only. For the explicit "
+        + "'waiting on lock owned by thread X' edge, also see vs_threads. Optional pid for multi-process "
+        + "sessions (default: the first debuggee).";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["pid"] = new JObject { ["type"] = "integer", ["description"] = "Process id to snapshot; omit to use the first debugged process." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var (mode, pids) = DebuggerReader.DebugTarget();
+        if (pids.Count == 0)
+        {
+            Log.Info($"vs_wait_chains -> mode={mode}, no debuggee");
+            Ui.BridgeStatus.RecordDebugInspect();
+            return new JObject { ["mode"] = mode, ["note"] = "No debugged process. Start or attach a debug session first (a Break All gives the cleanest snapshot)." };
+        }
+        int pid = (int?)args["pid"] ?? pids[0];
+
+        // Snapshot + CLR read OFF the UI thread (slow, and not a VS API) so devenv's UI never blocks.
+        JObject result = await Task.Run(() => ClrMdReader.ReadWaitChains(pid), ct);
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        result["mode"] = mode;
+        result["pid"] = pid;
+        if (result["error"] != null)
+            Log.Info($"vs_wait_chains(pid={pid}) -> error={(string?)result["error"]}");
+        else
+        {
+            int held = (result["heldLocks"] as JArray)?.Count ?? 0;
+            int susp = (result["deadlockSuspects"] as JArray)?.Count ?? 0;
+            Log.Info($"vs_wait_chains(pid={pid}) -> {held} held lock(s), {susp} suspect(s)");
+        }
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+}
+
+/// <summary>
+/// vs_async_stacks - reconstruct LOGICAL async call stacks via a ClrMD snapshot. A paused async
+/// continuation's physical stack is just MoveNext/ThreadPool; this rebuilds the logical chain
+/// (RunAsync -> ComputeAsync -> InnerAsync) from the heap's async state-machine boxes. Out-of-process,
+/// off the UI thread - same worker as vs_wait_chains.
+/// </summary>
+internal sealed class VsAsyncStacksTool : IIdeTool
+{
+    public string Name => "vs_async_stacks";
+    public string Description =>
+        "Reconstruct LOGICAL async call stacks from a ClrMD snapshot - the chain the physical stack hides. "
+        + "When paused on an async continuation the call stack is just MoveNext/ThreadPool frames; this walks "
+        + "the heap's async state-machine boxes and returns each in-flight async method chain (innermost first) "
+        + "with its await-point state, so you can see who awaits whom across awaits (e.g. a stuck async "
+        + "pipeline). Needs an active debug session; reads a fork, so it coexists with VS. Managed (.NET) only. "
+        + "Optional pid for multi-process sessions (default: the first debuggee).";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["pid"] = new JObject { ["type"] = "integer", ["description"] = "Process id to snapshot; omit to use the first debugged process." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var (mode, pids) = DebuggerReader.DebugTarget();
+        if (pids.Count == 0)
+        {
+            Log.Info($"vs_async_stacks -> mode={mode}, no debuggee");
+            Ui.BridgeStatus.RecordDebugInspect();
+            return new JObject { ["mode"] = mode, ["note"] = "No debugged process. Start or attach a debug session first." };
+        }
+        int pid = (int?)args["pid"] ?? pids[0];
+
+        JObject result = await Task.Run(() => ClrMdReader.ReadAsyncStacks(pid), ct);
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        result["mode"] = mode;
+        result["pid"] = pid;
+        if (result["error"] != null)
+            Log.Info($"vs_async_stacks(pid={pid}) -> error={(string?)result["error"]}");
+        else
+            Log.Info($"vs_async_stacks(pid={pid}) -> {(int?)result["count"] ?? 0} async stack(s)");
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
+    }
+}

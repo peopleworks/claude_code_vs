@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.5.0 - 2026-06-27
+
+ClrMD-powered structured concurrency analysis: exact lock ownership and logical async call stacks, run **out-of-process** so they coexist with the live VS debug session. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+
+### Features
+
+- **`vs_wait_chains`** — structured deadlock triage from a ClrMD process snapshot: every held monitor with its **owner thread + waiter count**, each thread's held locks and blocked state, and **`deadlockSuspects`** (threads that hold a lock *and* are blocked entering a monitor — the cycle members). Exact ownership, not parsed from stack text — a structured upgrade over 1.4.0's `lockOwnerThreadId`. Pair with `vs_threads` for the explicit "waiting on lock owned by thread X" edge. Live-verified cornering the LockJam 3-way deadlock.
+- **`vs_async_stacks`** — logical async call-stack reconstruction: walks the heap's async state-machine boxes and returns each in-flight async chain (innermost first) with its await-point `state` — the `RunAsync → ComputeAsync → InnerAsync` chain the *physical* `MoveNext`/`ThreadPool` stack hides. The modern `dotnet/diagnostics` `!dumpasync` approach ported to ClrMD. Live-verified on AsyncTrace.
+
+### Notes
+
+- **Out-of-process by design.** ClrMD can't load in-proc in devenv — ClrMD 4.0 binds `System.Collections.Immutable` 10.0.0.7, but devenv ships its own Immutable versions and unifies them through a binding policy an in-proc extension can't override (`MissingMethodException` on `DataTarget.get_ClrVersions`). So a bundled **`ClrMdWorker.exe`** (net48/x64, with its own `.exe.config`) takes the snapshot in a separate process and returns JSON; the extension shells out and parses it. The snapshot is a `PssCaptureSnapshot` **fork**, so it reads a clone and **coexists** with the live VS debug session (verified at a Break All — VS continues cleanly).
+- **25** `vs-debug` tools total (10 read, ungated + 15 drive, gated). Both new tools are ungated reads.
+- New `spike-clrmd/` Step-0 probe (proved the snapshot approach end-to-end against a VS-attached session).
+- Managed (.NET) only; x64 targets (the worker matches devenv's bitness; an x86 target would need an out-of-process x86 helper — future).
+- Tested against `claude` 2.1.191.
+
 ## 1.4.0 - 2026-06-25
 
 Deadlock-triage follow-ups to the 1.3.0 debugger surface — all pure EnvDTE, no AD7.

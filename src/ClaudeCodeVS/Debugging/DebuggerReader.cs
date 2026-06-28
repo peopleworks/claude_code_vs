@@ -578,6 +578,31 @@ internal static class DebuggerReader
         catch { /* best-effort */ }
     }
 
+    /// <summary>
+    /// (debug mode, debuggee PIDs) for the ClrMD tools, which snapshot a PID off the UI thread. The PID
+    /// must be read here (EnvDTE is UI-thread bound); the snapshot itself then runs on a background thread.
+    /// </summary>
+    public static (string mode, IReadOnlyList<int> pids) DebugTarget()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var pids = new List<int>();
+        var dte = ServiceProvider.GlobalProvider.GetService(typeof(SDTE)) as DTE;
+        var dbg = dte?.Debugger;
+        if (dbg == null) return ("unknown", pids);
+        string mode = ModeString(dbg);
+        try
+        {
+            var procs = dbg.DebuggedProcesses;
+            if (procs != null)
+                foreach (EnvDTE.Process p in procs)
+                {
+                    try { pids.Add(p.ProcessID); } catch { }
+                }
+        }
+        catch { /* best-effort */ }
+        return (mode, pids);
+    }
+
     /// <summary>The EnvDTE.Thread with <paramref name="threadId"/> in the current program, or null.</summary>
     private static EnvDTE.Thread? FindThread(Debugger dbg, int threadId)
     {
