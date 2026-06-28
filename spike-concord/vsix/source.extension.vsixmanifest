@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="ConcordSpike.045197E3-5871-4280-9CE5-4D6B33D8E5B7" Version="0.1.0" Language="en-US" Publisher="Rishi Gulati" />
+    <DisplayName>ClaudeCodeVS Concord Spike (throwaway)</DisplayName>
+    <Description xml:space="preserve">Rung-0 probe: a minimal Concord IDkmCallStackFilter component that injects a [ClaudeCodeVS Concord Spike] frame at the top of the call stack. If that frame appears during a managed debug session, VS loads our unsigned third-party Concord component. Throwaway - NOT for release.</Description>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.14,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Debugger" Version="[17.0,)" DisplayName="Visual Studio Debugger" />
+  </Prerequisites>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
+  </Dependencies>
+  <Assets>
+    <Asset Type="DebuggerEngineExtension" Path="ConcordSpike.vsdconfig" />
+  </Assets>
+</PackageManifest>
