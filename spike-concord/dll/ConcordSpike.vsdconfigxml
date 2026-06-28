@@ -18,11 +18,15 @@
     ComponentLevel="9995000"
     AssemblyName="ConcordSpike">
 
-    <Class Name="ConcordSpike.HelloWorldService">
+    <Class Name="ConcordSpike.SpikeService">
       <Implements>
         <InterfaceGroup>
           <NoFilter/>
+          <!-- Rung 0 canary -->
           <Interface Name="IDkmCallStackFilter"/>
+          <!-- Rung 1a observation: get called when breakpoints hit -->
+          <Interface Name="IDkmBoundBreakpointHitNotification"/>
+          <Interface Name="IDkmDataBreakpointHitNotification"/>
         </InterfaceGroup>
       </Implements>
     </Class>

@@ -58,14 +58,50 @@ the component DLL land at the VSIX root with the `DebuggerEngineExtension` asset
 | `[ClaudeCodeVS Concord Spike]` sits at the top of the call stack | ✅ **PASS** — VS 2026 loads our unsigned third-party Concord component. Door is open; build Rung 1. |
 | No such frame, normal stack only | ❌ **FAIL** — the component didn't load. Check the install registered the `.vsdconfig`; if it loads but the frame's absent, the IDE-component path is blocked for third parties. |
 
-## If it passes — Rung 1 (the *real* unknown)
+## Rung 1a — OBSERVE (current step)
 
-Loading a component ≠ the feature working. Rung 1: retarget this to a **Monitor-level**
-component (`ComponentLevel < 100000`, runs in `msvsmon.exe`), implement
-`IDkmModuleInstanceLoadNotification` filtered to the CLR runtime, and from that callback call
-`DkmRuntimeClrDataBreakpoint.Create(...).Enable()` on a field of a live .NET debuggee. If a write
-to that field doesn't trip a break, the feature is dead regardless of how clean the plumbing is —
-so prove **that** before building any extension↔component `DkmCustomMessage` channel.
+Rung 0 PASSED (the frame appeared). Loading a component ≠ the feature working, and research turned
+up two blockers to arming a data breakpoint blind: (1) **static fields are unsupported** — only an
+*instance field of a heap object* works; (2) `DkmRuntimeClrDataBreakpoint.Create` has **no field
+parameter** and **no public sample exists**, so the field→breakpoint binding is opaque.
+
+So before arming anything, we OBSERVE the engine doing it. The component now also implements
+`IDkmBoundBreakpointHitNotification` + `IDkmDataBreakpointHitNotification` and logs every readable
+property of a hit breakpoint — crucially `DkmPendingDataBreakpoint.DataElementLocation` + `.Size`
+(the engine's own field binding) — to **`%TEMP%\ConcordSpike-observe.log`**.
+
+### The observation test
+
+1. **Rebuild + reinstall** the 0.2.0 VSIX (installs over 0.1.0, same Id). **Restart VS.**
+2. **Delete** any old `%TEMP%\ConcordSpike-observe.log` so we read fresh data.
+3. **Pre-req (one-time):** Tools → Options → Debugging → General → **uncheck** "Use the legacy C#
+   and VB expression evaluators" (managed data BPs require the modern EE).
+4. **Debug the fixture:** open `spike-concord\fixture\DataBpTarget.csproj` in VS 2026 (it's
+   **.NET 8 / x64** — required; data BPs don't work on .NET Framework) and **F5**. It stops at
+   `Debugger.Break()`.
+5. **Set a data breakpoint the supported way:** in **Locals**, expand the `target` object,
+   right-click its **`Value`** field → **Break When Value Changes**.
+6. **Continue (F5).** On the first `target.Value = 100` write, VS should break (its own working
+   data BP). Optionally continue a few times.
+7. **Send me `%TEMP%\ConcordSpike-observe.log`.**
+
+### What the log tells us
+
+- **Did `==== DATA BREAKPOINT HIT ====` appear at all?** If yes, IDE-level components receive
+  data-BP hits → a single IDE component can likely drive Rung 1b. If the log shows only normal
+  breaks (or nothing) even though VS broke, data-BP hits aren't delivered to IDE level → Rung 1b
+  needs a **monitor-level** (`<100000`) component in `msvsmon`.
+- **`Pending.DataElementLocation` + `Pending.Size`** — the exact string/size the engine binds, i.e.
+  what we feed `DkmPendingDataBreakpoint.Create(...)` in Rung 1b.
+- **`bound.Target.Type` / `bound.Pending.Type`** — the concrete breakpoint classes, confirming
+  whether `DkmRuntimeClrDataBreakpoint` is what actually backs a managed data BP.
+
+## Rung 1b — ARM (next, once 1a is read)
+
+Using the observed `DataElementLocation`+`Size`+`SourceId`, call `DkmPendingDataBreakpoint.Create`
+(or `DkmRuntimeClrDataBreakpoint.Create`) from the right component tier at the first user break, and
+confirm an *unprompted* write trips the break. Only after that goes green do we build the
+extension↔component `DkmCustomMessage` channel and the model-facing `vs_set_data_breakpoint` tool.
 
 ## Uninstall
 
