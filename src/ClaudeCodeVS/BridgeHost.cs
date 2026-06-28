@@ -260,6 +260,7 @@ internal sealed class BridgeHost : IDisposable
         yield return new VsExceptionTool();      // inspect $exception at a throw / in a catch
         yield return new VsListProcessesTool();  // attach targets (debug real running apps)
         yield return new VsWaitChainsTool();     // ClrMD snapshot: structured lock ownership + deadlock suspects
+        yield return new VsAsyncStacksTool();    // ClrMD snapshot: logical async call-stack reconstruction
         // Phase 3 - drive (each gated behind BridgeStatus.AllowDebuggerDrive).
         yield return new VsContinueTool(driver);
         yield return new VsStepOverTool(driver);

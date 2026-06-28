@@ -20,6 +20,8 @@ internal static class ClrMdReader
 
     public static JObject ReadWaitChains(int pid) => RunWorker("waitchains", pid);
 
+    public static JObject ReadAsyncStacks(int pid) => RunWorker("asyncstacks", pid);
+
     private static JObject RunWorker(string command, int pid)
     {
         string dir = Path.GetDirectoryName(typeof(ClrMdReader).Assembly.Location) ?? "";
