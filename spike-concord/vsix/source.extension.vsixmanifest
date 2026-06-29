@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="ConcordSpike.045197E3-5871-4280-9CE5-4D6B33D8E5B7" Version="0.8.0" Language="en-US" Publisher="Rishi Gulati" />
+    <Identity Id="ConcordSpike.045197E3-5871-4280-9CE5-4D6B33D8E5B7" Version="0.9.0" Language="en-US" Publisher="Rishi Gulati" />
     <DisplayName>ClaudeCodeVS Concord Spike (throwaway)</DisplayName>
     <Description xml:space="preserve">Concord spike. Rung 0: injects a [ClaudeCodeVS Concord Spike] call-stack frame (proves the component loads). Rung 1b: at the first normal breakpoint, programmatically arms a managed data breakpoint on target.Value via DkmPendingDataBreakpoint; logs every step to %TEMP%\ConcordSpike-observe.log. Throwaway - NOT for release.</Description>
   </Metadata>

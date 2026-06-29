@@ -50,6 +50,7 @@ namespace ConcordSpike
         private static bool _armed;
         private static bool _arming;
         private static int _postArmBeats;   // diagnostic: count stack walks AFTER arming (proves the arm itself didn't crash)
+        private static bool _stopRequested;  // one-shot: force a real halt on the first data-BP hit
 
         // GC roots for the async Enable. The native engine does NOT root our managed work list or
         // completion delegate across BeginExecution, so if a GC runs before Enable completes, the
@@ -209,6 +210,21 @@ namespace ConcordSpike
                 Log.Line("==================== DATA BREAKPOINT HIT ====================");
                 Log.Line("  message: " + (message ?? "<null>"));
                 DescribeBound(bp);
+
+                // The hit notifies us but doesn't halt (our SourceId isn't a registered stopping
+                // source, and DkmEventDescriptorS has no "stop" - only Suppress). To turn the
+                // tracepoint into a real breakpoint, force a break on the first hit via AsyncBreak.
+                if (!_stopRequested)
+                {
+                    _stopRequested = true;
+                    DkmProcess proc = thread?.Process ?? bp?.Process;
+                    if (proc != null)
+                    {
+                        proc.AsyncBreak(true);
+                        Log.Line("  -> AsyncBreak(StopImmediately:true) requested (force a real halt)");
+                    }
+                    else Log.Line("  -> no DkmProcess to AsyncBreak");
+                }
                 Log.Line("============================================================");
             }
             catch (Exception ex) { Log.Line("  !! OnDataBreakpointHit threw: " + ex); }
