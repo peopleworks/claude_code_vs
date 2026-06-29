@@ -35,7 +35,7 @@ internal sealed class VsSetDataBreakpointTool : IIdeTool
         {
             ["expression"] = new JObject { ["type"] = "string", ["description"] = "owner.field to watch - an instance field of a heap object, e.g. order.Total." },
             ["condition"] = new JObject { ["type"] = "string", ["description"] = "Optional. Match only when the new value satisfies a comparison: one of > >= < <= == != followed by a number (or ==/!= with a string). Empty = every change matches." },
-            ["stopOnChange"] = new JObject { ["type"] = "boolean", ["description"] = "Optional (default false). When true, break execution on the first change matching the condition so you can inspect locals at the write." },
+            ["stopOnChange"] = new JObject { ["type"] = "boolean", ["description"] = "Optional (default false). When true, break execution on EACH change matching the condition so you can inspect locals at the mutation (re-breaks every time, like a normal breakpoint). Note: the stop lands one statement AFTER the write (the data breakpoint fires once the write completes)." },
         },
         ["required"] = new JArray("expression"),
     };
@@ -68,9 +68,10 @@ internal sealed class VsGetDataChangesTool : IIdeTool
     public string Name => "vs_get_data_changes";
 
     public string Description =>
-        "Return the change timeline for a data breakpoint armed with vs_set_data_breakpoint: every "
-        + "old->new value seen so far (in order) plus whether execution has broken. Read-only; poll it "
-        + "to follow a value across a run - e.g. to find which write turned it bad.";
+        "Return the change timeline for a data breakpoint armed with vs_set_data_breakpoint: every change "
+        + "seen so far (oldest first) as structured {previous, current, type}, plus 'broke'/'breakCount'. "
+        + "Read-only; poll it to follow a value across a run - e.g. to find which write turned it bad, then "
+        + "set a normal breakpoint at that write site.";
 
     public JToken Schema => new JObject
     {

@@ -45,9 +45,9 @@ internal sealed class DataBreakpointBridge : IDisposable
         public string Expression;
         public string Condition;
         public bool StopOnChange;
-        public bool MatchHandled;                  // one-shot: a matching change has been acted on
-        public bool Broke;                         // a break was actually ISSUED by the tailer (honest)
-        public readonly List<JObject> Changes = new();
+        public bool Broke;                         // broke at least once (honest: a real Break was issued)
+        public int BreakCount;                     // how many matching changes halted execution
+        public readonly List<JObject> Changes = new();   // structured: {previous, current, type}
     }
 
     /// <summary>Arm a watch on an instance-field expression; returns {requestId, status} or {error}.</summary>
@@ -111,8 +111,9 @@ internal sealed class DataBreakpointBridge : IDisposable
                 ["expression"] = w.Expression,
                 ["count"] = w.Changes.Count,
                 ["stopOnChange"] = w.StopOnChange,
-                ["broke"] = w.Broke,   // true only if the tailer actually issued a Break on a matching change
-                ["changes"] = new JArray(w.Changes)
+                ["broke"] = w.Broke,           // honest: a real Break was issued on a matching change
+                ["breakCount"] = w.BreakCount,
+                ["changes"] = new JArray(w.Changes)   // structured {previous,current,type}, oldest first
             };
     }
 
@@ -154,28 +155,47 @@ internal sealed class DataBreakpointBridge : IDisposable
         string id = (string)ev["requestId"];
         if (id == null || !_watches.TryGetValue(id, out var w)) return;
 
-        lock (w.Changes) w.Changes.Add(ev);
+        // Turn the component's "**Previous Value:** X ... **Current Value:** Y (type)" message into
+        // structured {previous, current, type} (numbers when numeric) - far easier to reason over than
+        // re-parsing markdown. Drop the per-entry requestId/expression (already at the top level).
+        string change = (string)ev["change"];
+        string prev = ExtractValue(change, "Previous Value");
+        string cur = ExtractValue(change, "Current Value");
+        var entry = new JObject { ["previous"] = ToToken(prev), ["current"] = ToToken(cur), ["type"] = ExtractType(change) };
+        lock (w.Changes) w.Changes.Add(entry);
 
-        if (w.StopOnChange && !w.MatchHandled)
+        // Break on EVERY matching change (a data breakpoint halts each time the condition holds, not
+        // just once). Each change line is processed exactly once, and a new write can only occur after
+        // the debuggee resumes, so this naturally re-breaks on each subsequent match.
+        if (w.StopOnChange && ConditionMatches(w.Condition, cur))
         {
-            string newVal = ParseNewValue((string)ev["change"]);
-            if (ConditionMatches(w.Condition, newVal))
-            {
-                w.MatchHandled = true;                             // one-shot
-                // RAW break (no drive gate): a model vs_continue in flight holds the gate while parked
-                // on the next break, so a gated break would be rejected. This trips the debuggee and the
-                // parked continue catches it and returns at the mutation.
-                w.Broke = await _driver.RequestBreakAsync(ct);
-            }
+            // RAW break (no drive gate): a model vs_continue in flight holds the gate while parked on the
+            // next break, so a gated break would be rejected. This trips the debuggee and the parked
+            // continue catches it and returns at the mutation.
+            if (await _driver.RequestBreakAsync(ct)) { w.Broke = true; w.BreakCount++; }
         }
     }
 
-    // Pull the new value out of the component's "**Previous Value:** X ... **Current Value:** Y" message.
-    private static string ParseNewValue(string change)
+    private static string ExtractValue(string change, string label)
     {
         if (change == null) return null;
-        var m = Regex.Match(change, @"Current Value:\**\s*([^\s(]+)");
+        var m = Regex.Match(change, Regex.Escape(label) + @":\**\s*([^\s(]+)");
         return m.Success ? m.Groups[1].Value : null;
+    }
+
+    private static string ExtractType(string change)
+    {
+        if (change == null) return null;
+        var m = Regex.Match(change, @"Current Value:[^(\r\n]*\(([^)]+)\)");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    private static JToken ToToken(string v)
+    {
+        if (v == null) return JValue.CreateNull();
+        if (long.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out long l)) return new JValue(l);
+        if (double.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out double d)) return new JValue(d);
+        return new JValue(v);
     }
 
     // condition: "&lt;op&gt; &lt;value&gt;" with op in &gt; &gt;= &lt; &lt;= == != (numeric, or ==/!= as string).
