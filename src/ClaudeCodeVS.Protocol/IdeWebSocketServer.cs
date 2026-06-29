@@ -60,6 +60,14 @@ public sealed class IdeWebSocketServer
     /// </summary>
     public McpServer? DebugMcp { get; set; }
 
+    /// <summary>
+    /// Third MCP surface (POST /mcp-semantic) for the vs-semantic PULL channel: Roslyn code-navigation
+    /// tools (vs_search_symbols / vs_find_references / vs_go_to_definition / vs_find_implementations /
+    /// vs_call_hierarchy / vs_type_hierarchy). Same shim, a different -Route, its own tool registry — the
+    /// static-analysis sibling of <see cref="DebugMcp"/>'s runtime tools. Null until the VSIX wires it.
+    /// </summary>
+    public McpServer? SemanticMcp { get; set; }
+
     public IdeWebSocketServer(int port, string authToken, McpServer mcp)
     {
         _port = port;
@@ -135,7 +143,13 @@ public sealed class IdeWebSocketServer
             if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
                 && ctx.Request.Url?.AbsolutePath == "/mcp")
             {
-                await HandleMcpRequestAsync(ctx, ct);
+                await HandleMcpRequestAsync(ctx, DebugMcp, "/mcp", ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/mcp-semantic")
+            {
+                await HandleMcpRequestAsync(ctx, SemanticMcp, "/mcp-semantic", ct);
                 return;
             }
             ctx.Response.StatusCode = 400;
@@ -284,7 +298,7 @@ public sealed class IdeWebSocketServer
     /// back (or an empty 200 for notifications, where HandleAsync returns null). The stdio shim does the
     /// newline framing; here it's one request per POST. Auth was already validated at the upgrade above.
     /// </summary>
-    private async Task HandleMcpRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    private async Task HandleMcpRequestAsync(HttpListenerContext ctx, McpServer? mcp, string routePath, CancellationToken ct)
     {
         string? response = null;
         try
@@ -293,13 +307,12 @@ public sealed class IdeWebSocketServer
             using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
                 body = await reader.ReadToEndAsync();
 
-            var mcp = DebugMcp;
             if (mcp != null && body.Length > 0)
                 response = await mcp.HandleAsync(body, ct);
         }
         catch (Exception e)
         {
-            Log.Warn($"/mcp request failed: {e.Message}");
+            Log.Warn($"{routePath} request failed: {e.Message}");
         }
 
         try

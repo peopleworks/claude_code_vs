@@ -14,7 +14,17 @@ Current release ships the core protocol bridge end-to-end: native diff with Acce
 
 **How:** MEF-import `VisualStudioWorkspace` (available in-proc) and walk `Compilation.GetDiagnostics()` per `Document`. Map `Diagnostic.Location.GetLineSpan()` -> LSP range, `DiagnosticSeverity` -> LSP severity. Use Roslyn for C#/.NET; keep the Error List path as the C++ fallback (MSVC has no Roslyn).
 
+**Now de-risked:** the 1.9.0 `vs-semantic` work already imports `VisualStudioWorkspace` in-proc and proves the `ExcludeAssets="runtime"` binding (`CodeModel/RoslynReader.cs`). This item is now mostly "reuse that workspace handle for diagnostics + map spans."
+
 **Caveat:** Requires a loaded project - Roslyn doesn't analyze loose files. The Error List fallback handles C++ and the open-folder case.
+
+### Semantic-navigation follow-ups (post-1.9.0 `vs-semantic`)
+
+**Shipped (1.9.0):** `vs_search_symbols` / `vs_find_references` / `vs_go_to_definition` / `vs_find_implementations` / `vs_call_hierarchy` / `vs_type_hierarchy` on the `vs-semantic` MCP server (`docs/SEMANTIC.md`). Remaining:
+
+- **Transitive callees** - `vs_call_hierarchy direction:callees` is depth-1 only; reconstruct the full callee graph (cycle-guarded like callers).
+- **Rename / safe refactors** - route Roslyn `Renamer`/code-fix edits through the existing diff gate, so each change is still one Accept/Reject. Crosses from read-only navigation into mutation - design the gate carefully.
+- **Per-frame source for the debugger** could reuse the same workspace to map call-stack frames to precise documents.
 
 ---
 

@@ -17,11 +17,12 @@ If you ever find yourself adding an LLM API call, an agent loop, or a tool the C
 ## Architecture (where things live)
 
 - `src/ClaudeCodeVS.Protocol/` - lockfile writer, WS server, MCP/JSON-RPC framing.
-- `src/ClaudeCodeVS/Tools/` - one `IIdeTool` per tool: the 12 IDE-protocol tools (openDiff, openFile, getDiagnostics, …) plus the debugger surface - `DebugTools.cs` (reads) + `DriveTools.cs` (gated drive).
+- `src/ClaudeCodeVS/Tools/` - one `IIdeTool` per tool: the 12 IDE-protocol tools (openDiff, openFile, getDiagnostics, …) plus the debugger surface - `DebugTools.cs` (reads) + `DriveTools.cs` (gated drive) - plus the semantic surface - `SemanticTools.cs` (the 7 `vs-semantic` Roslyn navigation tools, incl. `vs_get_selection`).
+- `src/ClaudeCodeVS/CodeModel/` - `RoslynReader` (the semantic-model reader: search/find-references/go-to-definition/find-implementations/call-&-type-hierarchy over the live `VisualStudioWorkspace`). The static-analysis twin of `Debugging/DebuggerReader`; backs the `vs-semantic` MCP server. Roslyn binds **in-proc** (unlike ClrMD) - `VisualStudioWorkspace` is the supported extension entry point.
 - `src/ClaudeCodeVS/Diff/` - diff rendering + Accept/Reject InfoBar + write-back + tab registry.
 - `src/ClaudeCodeVS/Editor/` - selection service + TextViewListener MEF component + Error List reader + RDT helpers.
 - `src/ClaudeCodeVS/Debugging/` - `DebuggerReader` (EnvDTE reads: break state, stack, locals, threads, object-graph expansion, `$exception`, processes) + `DebuggerDriver` (EnvDTE/`IVsDebugger` drive: continue/step/breakpoints/session, break-on-thrown via `EnvDTE90.Debugger3`, attach/detach + the await-break engine).
-- `src/ClaudeCodeVS/Hooks/` - hook installer (`PermissionHookInstaller`) + `McpInstaller` (registers the `vs-debug` MCP server) + embedded scripts: `vs-permission-hook.ps1`, `vs-usage-hook.ps1`, `vs-debug-context-hook.ps1`, `vs-mcp-shim.ps1`.
+- `src/ClaudeCodeVS/Hooks/` - hook installer (`PermissionHookInstaller`) + `McpInstaller` (registers BOTH the `vs-debug` and `vs-semantic` MCP servers) + embedded scripts: `vs-permission-hook.ps1`, `vs-usage-hook.ps1`, `vs-debug-context-hook.ps1`, `vs-mcp-shim.ps1` (one shim, parameterized by `-Route` so it backs both servers: `/mcp` = vs-debug, `/mcp-semantic` = vs-semantic).
 - `src/ClaudeCodeVS/Ui/` - dockable panel (BridgeStatus state, ClaudeToolWindowControl WPF, ReasonDialog).
 - `BridgeHost.cs` - wires everything together; owns the `/permission` handler and CLI launcher.
 - `spike/` - Phase 0 standalone console harness (net8.0), kept for protocol regression testing.
@@ -100,6 +101,17 @@ Live debugger exposed to the model over the SAME bridge (full reference: `docs/D
 Currently both C# and C++ diagnostics come from the **Error List** (`SVsErrorList -> IVsTaskList`) via `ErrorListReader.cs`. This is a single unified path that serves both languages - Roslyn pushes C# diagnostics into the Error List and the MSVC toolchain pushes C++ ones. Ranges are point ranges only (the Error List exposes one line/column per entry).
 
 Roslyn-precise C# span ranges (`VisualStudioWorkspace -> Compilation.GetDiagnostics()`) are a Phase 3 enhancement - see `ROADMAP.md`. Always return `[{uri, diagnostics: []}]` - the envelope, even when empty. Requires a loaded project (the Error List is empty for loose files).
+
+## Semantic navigation (1.9.0; `vs-semantic` MCP server)
+
+The third knowledge axis (after runtime state and diagnostics): Roslyn's resolved **semantic model** of the code, exposed as 7 read-only tools so the model navigates by ground truth instead of grep. Full reference: `docs/SEMANTIC.md`.
+
+- **A THIRD MCP server, `vs-semantic`**, served at `POST /mcp-semantic` on the same `HttpListener`, reached by the **same** `vs-mcp-shim.ps1` with `-Route /mcp-semantic`. `McpInstaller` registers both `vs-debug` and `vs-semantic` in `.mcp.json`. Wired in `BridgeHost.BuildSemanticTools()` -> `IdeWebSocketServer.SemanticMcp`. This is why a new IDE-channel tool wouldn't work (CLI-curated) - same reasoning as the debugger pull channel.
+- **Tools** (`Tools/SemanticTools.cs`, backed by `CodeModel/RoslynReader.cs`): `vs_search_symbols` (name -> candidates, each with a stable `symbolId`) + `vs_find_references` / `vs_go_to_definition` / `vs_find_implementations` / `vs_call_hierarchy` (callers transitive, callees direct) / `vs_type_hierarchy` (base/derived) + `vs_get_selection` (the editor's current selection/caret via the existing `SelectionService`, enriched with the Roslyn `symbolId` at that position -> "act on this / navigate from it"). All ungated, managed (C#/VB) only, `{"available":false}` with no loaded project (the `vs_get_selection` text read works regardless; only its symbol enrichment needs Roslyn).
+- **Addressing**: every navigation takes a `symbolId` (Roslyn **DocumentationCommentId**, e.g. `M:Ns.Type.Method(System.Int32)`) OR a `file`+`line`(+`column`) position. `symbolId` round-trips via `DocumentationCommentId.GetFirstSymbolForDeclarationId`; position via `SymbolFinder.FindSymbolAtPositionAsync`. Workflow: search -> id -> navigate.
+- **Threading is INVERTED vs the debugger**: the Roslyn `Solution` is an immutable, free-threaded snapshot, so we take the workspace handle on the UI thread (`GetSolutionOffThreadAsync`) then `await TaskScheduler.Default` to run `SymbolFinder` OFF the UI thread - no editor stall. (EnvDTE is UI-thread-bound end to end; Roslyn is not.)
+- **Roslyn binds in-proc** - reference `Microsoft.VisualStudio.LanguageServices` with **`ExcludeAssets="runtime"`** (compile-time only; bind to devenv's own copy at runtime). The `.vsix` ships ZERO Roslyn DLLs - verify this on every build, a bundled copy is the `MissingMethodException` skew that exiled ClrMD. Unlike ClrMD, `VisualStudioWorkspace` IS the supported in-proc entry point, so this works. Fixture: `demo/RefMaze` (interface + 3 impls incl. an explicit one, an overload set, a call chain - every tool returns something grep gets wrong).
+- **Callees is direct-only** (depth 1, via the language-agnostic `IOperation` tree - works for VB too). Callers is transitive (depth-capped, cycle-guarded). Output capped + `{truncated}`-signaled like the debugger reader.
 
 ## Build / run / test
 

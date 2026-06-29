@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for the vs-semantic (Roslyn code-navigation) tools. Unlike the debugger fixtures, this one
+       has no runtime bug - it's a small "maze" of references designed so each semantic tool returns
+       something TEXT SEARCH would get wrong:
+         - IShape has three implementors, one of them via an EXPLICIT interface implementation
+           (Triangle.IShape.Area) that a grep for ".Area()" call sites won't connect to the interface.
+         - ShapeBase splits the hierarchy (Circle/Square derive from it; Triangle implements IShape directly)
+           so type_hierarchy(base/derived) has real structure.
+         - Describe(...) is an overload SET, so go_to_definition must pick the right one, not all of them.
+         - Main -> Report -> SummarizeAll -> IShape.Area() is a call chain for call_hierarchy(callers).
+       Open RefMaze.sln in VS, Launch Claude Code, and ask Claude to map the IShape hierarchy / find all
+       implementors / find references - then compare against grep. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

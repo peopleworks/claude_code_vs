@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.9.0 - 2026-06-29
+
+**Semantic code navigation** — Visual Studio's resolved understanding of your code (Roslyn), exposed as read-only tools so Claude navigates by ground truth instead of grepping text. The third knowledge axis after runtime state (debugger) and diagnostics. Full reference: [`docs/SEMANTIC.md`](docs/SEMANTIC.md).
+
+### Features
+
+- **`vs_get_selection`** — what the user currently has selected (or where the caret is) in the active editor: text, file, range — **plus the Roslyn symbol at that position with its `symbolId`** when the file is in the loaded solution. Lets Claude act on "this" / "the selected code" and navigate straight from it (selection → `symbolId` → references/callers). Reuses the existing `SelectionService` (which already fed the dormant `getCurrentSelection` IDE-channel tool); the text read works in any language, the symbol enrichment is C#/VB.
+- **`vs_search_symbols`** — find declared symbols by name across the loaded C#/VB solution; each result carries a stable `symbolId` (Roslyn DocumentationCommentId) the other tools consume. The addressing primitive *and* the semantic "where is X declared."
+- **`vs_find_references`** — semantic Find-All-References: resolves through interfaces, overrides, partial classes, generics, and explicit interface implementations; excludes comments/strings. The ground-truth "where is this used."
+- **`vs_go_to_definition`** — the *right* definition among overloads / many same-named types. Address by `symbolId` or by `file`+`line` (cursor-style — disambiguates a specific call site).
+- **`vs_find_implementations`** — concrete implementors of an interface/member, overrides of an abstract/virtual member, or derived classes of a base. Exact (grep's `: IFoo` misses indirect + explicit implementations).
+- **`vs_call_hierarchy`** — `callers` (default): who **transitively** calls a method, as a depth-limited, cycle-guarded tree with call sites (impact analysis). `callees`: what it directly calls.
+- **`vs_type_hierarchy`** — `derived` (default): subtypes/implementors; `base`: the base-class chain + implemented interfaces.
+
+### Notes
+
+- New **`vs-semantic` MCP server** at `POST /mcp-semantic`, served by the *same* `vs-mcp-shim.ps1` parameterized with `-Route`. `McpInstaller` now registers both `vs-debug` and `vs-semantic` in `.mcp.json` (a one-time CLI trust prompt for the new server). Backed by `CodeModel/RoslynReader.cs` + `Tools/SemanticTools.cs`, wired via `BridgeHost.BuildSemanticTools()` → `IdeWebSocketServer.SemanticMcp`.
+- **All read-only and ungated** (no execution, no mutation) — unlike the debugger drive tools, there's no toggle. **Managed (C#/VB) only**; returns `{"available":false}` when no project is loaded. Works any time a solution is open — no debug session required.
+- **Roslyn binds in-proc.** `Microsoft.VisualStudio.LanguageServices` is referenced `ExcludeAssets="runtime"` (compile-time only → bind to devenv's own copy); the `.vsix` ships zero Roslyn DLLs. `VisualStudioWorkspace` is the supported in-proc entry point, so this works where in-proc ClrMD didn't. Queries run **off** the UI thread (the Roslyn `Solution` is an immutable, free-threaded snapshot) so navigation never stalls the editor.
+- New `demo/RefMaze` fixture — an `IShape` reference maze (three implementors incl. an explicit interface implementation, an overload set, a call chain) where each tool returns something text search gets wrong. Verified end-to-end via the CLI tools and a raw `/mcp-semantic` suite.
+- Output is bounded but signaled (`{"truncated":true}`), matching the debugger reader's convention. `callees` is direct-only for now (transitive callees + rename/refactor are on the roadmap).
+
 ## 1.8.1 - 2026-06-29
 
 **Managed data breakpoints** — "break (or trace) when a value changes." This has *no* EnvDTE/automation surface and VS's own UI can't set it programmatically; we reach it with a bundled **Concord (debug-engine) component** driven over file-IPC. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).

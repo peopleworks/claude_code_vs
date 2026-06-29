@@ -19,7 +19,15 @@ namespace ClaudeCodeVs.Hooks;
 internal static class McpInstaller
 {
     private const string ShimScript = "vs-mcp-shim.ps1";
-    private const string ServerName = "vs-debug";
+
+    // The two pull-channel MCP servers, both backed by the same stdio shim (different -Route → different
+    // bridge endpoint). vs-debug stays byte-identical to its original entry (no extra args → shim default
+    // /mcp); vs-semantic adds -Route /mcp-semantic for the Roslyn code-navigation tools.
+    private static readonly (string Name, string[] ExtraArgs)[] Servers =
+    {
+        ("vs-debug", new string[0]),
+        ("vs-semantic", new[] { "-Route", "/mcp-semantic" }),
+    };
 
     public static void EnsureInstalled(string workspaceRoot)
     {
@@ -54,23 +62,31 @@ internal static class McpInstaller
             var servers = root["mcpServers"] as JObject ?? new JObject();
             root["mcpServers"] = servers;
 
-            var desired = new JObject
+            bool changed = false;
+            foreach (var (name, extraArgs) in Servers)
             {
-                ["type"] = "stdio",
-                ["command"] = "powershell",
-                ["args"] = new JArray("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $".claude/{ShimScript}"),
-            };
+                var argv = new JArray("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $".claude/{ShimScript}");
+                foreach (var a in extraArgs) argv.Add(a);
+                var desired = new JObject
+                {
+                    ["type"] = "stdio",
+                    ["command"] = "powershell",
+                    ["args"] = argv,
+                };
 
-            bool changed = !JToken.DeepEquals(servers[ServerName], desired);
+                if (JToken.DeepEquals(servers[name], desired)) continue;
+                servers[name] = desired;
+                changed = true;
+            }
+
             if (!changed)
             {
-                Log.Info($"mcp: '{ServerName}' already registered in {mcpPath}; nothing to change");
+                Log.Info($"mcp: 'vs-debug' + 'vs-semantic' already registered in {mcpPath}; nothing to change");
                 return;
             }
 
-            servers[ServerName] = desired;
             File.WriteAllText(mcpPath, root.ToString(Formatting.Indented));
-            Log.Info($"mcp: registered '{ServerName}' MCP server in {mcpPath} (debug pull channel)");
+            Log.Info($"mcp: registered 'vs-debug' + 'vs-semantic' MCP servers in {mcpPath} (pull channels)");
         }
         catch (Exception e)
         {
