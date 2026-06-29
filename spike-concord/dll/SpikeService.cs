@@ -205,7 +205,16 @@ namespace ConcordSpike
                 {
                     try
                     {
-                        DkmBasicInstructionSymbolInfo sym = thread.GetTopStackFrame()?.BasicSymbolInfo;
+                        // Try the CLR-runtime frame (the no-arg top frame may be raw/native with no
+                        // symbols). Diagnostic-log what's null so a miss is explainable.
+                        DkmClrRuntimeInstance clr = null;
+                        foreach (DkmRuntimeInstance ri in thread.Process.GetRuntimeInstances())
+                            if (ri is DkmClrRuntimeInstance c) { clr = c; break; }
+                        DkmStackWalkFrame top = clr != null ? thread.GetTopStackWalkFrame(clr) : thread.GetTopStackFrame();
+                        DkmBasicInstructionSymbolInfo sym = top?.BasicSymbolInfo;
+                        Log.Line("capture: top=" + (top == null ? "null" : "ok") +
+                                 " desc=" + (top?.Description ?? "null") +
+                                 " sym=" + (sym == null ? "null" : "ok"));
                         if (sym != null)
                         {
                             location = sym.MethodName ?? "?";
@@ -214,7 +223,7 @@ namespace ConcordSpike
                                 location += " @ " + (pos.DocumentName ?? "?") + ":" + pos.TextSpan.StartLine;
                         }
                     }
-                    catch (Exception lex) { location = "<location error: " + lex.Message + ">"; }
+                    catch (Exception lex) { location = "<location error: " + lex.Message + ">"; Log.Line("capture threw: " + lex.Message); }
                 }
 
                 AppendEvent(_armedRequestId, _armedExpression, message, location);
