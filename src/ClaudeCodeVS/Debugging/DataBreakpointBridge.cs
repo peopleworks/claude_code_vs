@@ -45,7 +45,8 @@ internal sealed class DataBreakpointBridge : IDisposable
         public string Expression;
         public string Condition;
         public bool StopOnChange;
-        public bool Stopped;                       // one-shot stop guard (v1)
+        public bool MatchHandled;                  // one-shot: a matching change has been acted on
+        public bool Broke;                         // a break was actually ISSUED by the tailer (honest)
         public readonly List<JObject> Changes = new();
     }
 
@@ -110,7 +111,7 @@ internal sealed class DataBreakpointBridge : IDisposable
                 ["expression"] = w.Expression,
                 ["count"] = w.Changes.Count,
                 ["stopOnChange"] = w.StopOnChange,
-                ["broke"] = w.Stopped,
+                ["broke"] = w.Broke,   // true only if the tailer actually issued a Break on a matching change
                 ["changes"] = new JArray(w.Changes)
             };
     }
@@ -136,7 +137,7 @@ internal sealed class DataBreakpointBridge : IDisposable
                     using var sr = new StreamReader(fs);
                     string line;
                     while ((line = sr.ReadLine()) != null)
-                        if (line.Length > 0) HandleLine(line, ct);
+                        if (line.Length > 0) await HandleLineAsync(line, ct);
                     _eventsPos = fs.Position;
                 }
             }
@@ -146,7 +147,7 @@ internal sealed class DataBreakpointBridge : IDisposable
         }
     }
 
-    private void HandleLine(string line, CancellationToken ct)
+    private async Task HandleLineAsync(string line, CancellationToken ct)
     {
         JObject ev;
         try { ev = JObject.Parse(line); } catch { return; }
@@ -155,13 +156,16 @@ internal sealed class DataBreakpointBridge : IDisposable
 
         lock (w.Changes) w.Changes.Add(ev);
 
-        if (w.StopOnChange && !w.Stopped)
+        if (w.StopOnChange && !w.MatchHandled)
         {
             string newVal = ParseNewValue((string)ev["change"]);
             if (ConditionMatches(w.Condition, newVal))
             {
-                w.Stopped = true;                                  // one-shot for v1
-                _ = _driver.BreakAllAsync(5000, ct);               // EnvDTE Break (lands just after the write)
+                w.MatchHandled = true;                             // one-shot
+                // RAW break (no drive gate): a model vs_continue in flight holds the gate while parked
+                // on the next break, so a gated break would be rejected. This trips the debuggee and the
+                // parked continue catches it and returns at the mutation.
+                w.Broke = await _driver.RequestBreakAsync(ct);
             }
         }
     }

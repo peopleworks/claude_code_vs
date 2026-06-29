@@ -150,6 +150,29 @@ internal sealed class DebuggerDriver : IVsDebuggerEvents, IDisposable
         catch { return false; }
     }
 
+    /// <summary>
+    /// Issue a raw Break All (EnvDTE Break) for the data-breakpoint tailer to halt on a matching change.
+    /// Deliberately does NOT go through the drive gate (BeginCommand) or the await-next-break machinery:
+    /// a model vs_continue/step is typically already in flight HOLDING that gate while parked on the next
+    /// break, so a gated BreakAllAsync would be rejected and never fire. This raw Break trips the
+    /// debuggee; the in-flight command's parked waiter (OnModeChange) catches it and returns at the
+    /// mutation. If nothing is awaiting, the model sees the stop on its next vs_debug_state poll. Returns
+    /// true only if a break was actually issued (the debuggee was running).
+    /// </summary>
+    public async Task<bool> RequestBreakAsync(CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var dbg = Dte()?.Debugger;
+        if (dbg == null) return false;
+        try
+        {
+            if (dbg.CurrentMode != dbgDebugMode.dbgRunMode) return false; // only break a running debuggee
+            dbg.Break(false); // Break All; WaitForBreakOrEnd=false (never block the UI thread)
+            return true;
+        }
+        catch { return false; }
+    }
+
     // ===== session control (start = F5 + await first break; stop = Shift+F5) =====
 
     /// <summary>Start a debug session (only from design mode) and run to the first break (or completion).</summary>
