@@ -27,6 +27,7 @@ using Microsoft.VisualStudio.Debugger.CallStack;
 using Microsoft.VisualStudio.Debugger.Clr;
 using Microsoft.VisualStudio.Debugger.ComponentInterfaces;
 using Microsoft.VisualStudio.Debugger.Evaluation;
+using Microsoft.VisualStudio.Debugger.Symbols;
 
 namespace ConcordSpike
 {
@@ -45,6 +46,7 @@ namespace ConcordSpike
         // The requestId we've already armed (so we arm a given request exactly once). null = none yet.
         private static string _armedRequestId;
         private static string _armedExpression;
+        private static bool _captureStack;   // model-driven: capture method+file:line per change
         private static bool _arming;   // re-entrancy guard while an arm attempt runs
 
         // ---------- request-thread trigger: arm on a stack walk when a new request is pending ----------
@@ -77,8 +79,9 @@ namespace ConcordSpike
 
         private static void TryProcessRequest(DkmStackWalkFrame frame)
         {
-            // request.txt: line1 = requestId, line2 = expression (e.g. "target.Value").
-            string id, expression;
+            // request.txt: line1 = requestId, line2 = expression (e.g. "target.Value"),
+            // optional line3 = "true" to capture method+file:line per change.
+            string id, expression; bool captureStack;
             try
             {
                 if (!File.Exists(RequestFile)) return;
@@ -86,6 +89,7 @@ namespace ConcordSpike
                 if (lines.Length < 2) return;
                 id = lines[0].Trim();
                 expression = lines[1].Trim();
+                captureStack = lines.Length >= 3 && lines[2].Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
             }
             catch { return; }
 
@@ -109,8 +113,9 @@ namespace ConcordSpike
             {
                 _armedRequestId = id;
                 _armedExpression = expression;
+                _captureStack = captureStack;
                 WriteStatus(id, "armed");
-                Log.Line("ARMED request " + id + " on " + expression);
+                Log.Line("ARMED request " + id + " on " + expression + (captureStack ? " (captureStack)" : ""));
             }
             else if (err == "retry")
             {
@@ -191,7 +196,28 @@ namespace ConcordSpike
             {
                 // Only report breakpoints WE armed (match our SourceId).
                 if (bp == null || bp.SourceId != OurDataBpSourceId) return;
-                AppendEvent(_armedRequestId, _armedExpression, message);
+
+                // Model-driven: capture WHERE the write happened (top frame method + file:line) only
+                // when the request asked for it. The process is stopped here, so the thread's top
+                // frame IS the writing location.
+                string location = null;
+                if (_captureStack && thread != null)
+                {
+                    try
+                    {
+                        DkmBasicInstructionSymbolInfo sym = thread.GetTopStackFrame()?.BasicSymbolInfo;
+                        if (sym != null)
+                        {
+                            location = sym.MethodName ?? "?";
+                            DkmSourcePosition pos = sym.SourcePosition;
+                            if (pos != null)
+                                location += " @ " + (pos.DocumentName ?? "?") + ":" + pos.TextSpan.StartLine;
+                        }
+                    }
+                    catch (Exception lex) { location = "<location error: " + lex.Message + ">"; }
+                }
+
+                AppendEvent(_armedRequestId, _armedExpression, message, location);
             }
             catch (Exception ex) { Log.Line("OnDataBreakpointHit threw: " + ex.Message); }
             // Note: we do NOT halt here - in-engine halt from this notification doesn't work.
@@ -204,13 +230,14 @@ namespace ConcordSpike
             catch { }
         }
 
-        private static void AppendEvent(string id, string expression, string message)
+        private static void AppendEvent(string id, string expression, string message, string location)
         {
             try
             {
                 Directory.CreateDirectory(IpcDir);
                 string line = "{\"requestId\":" + Json(id) + ",\"expression\":" + Json(expression) +
-                              ",\"change\":" + Json(message) + "}";
+                              ",\"change\":" + Json(message) +
+                              (location != null ? ",\"location\":" + Json(location) : "") + "}";
                 File.AppendAllText(EventsFile, line + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
