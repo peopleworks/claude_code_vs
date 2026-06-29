@@ -28,9 +28,12 @@ namespace ClaudeCodeVs.Debugging;
 internal sealed class DataBreakpointBridge : IDisposable
 {
     private static readonly string IpcDir = Path.Combine(Path.GetTempPath(), "claude-codevs-databp");
-    private static string RequestFile => Path.Combine(IpcDir, "request.txt");
-    private static string StatusFile => Path.Combine(IpcDir, "status.txt");
+    private static string RequestsDir => Path.Combine(IpcDir, "requests");
+    private static string RemovesDir => Path.Combine(IpcDir, "removes");
+    private static string StatusDir => Path.Combine(IpcDir, "status");
     private static string EventsFile => Path.Combine(IpcDir, "events.jsonl");
+    private static string RequestFileFor(string id) => Path.Combine(RequestsDir, id + ".txt");
+    private static string StatusFileFor(string id) => Path.Combine(StatusDir, id + ".txt");
 
     private readonly DebuggerDriver _driver;
     private readonly ConcurrentDictionary<string, Watch> _watches = new();
@@ -62,41 +65,64 @@ internal sealed class DataBreakpointBridge : IDisposable
         string id = Guid.NewGuid().ToString("N").Substring(0, 8);
         _watches[id] = new Watch { Expression = expression, Condition = condition, StopOnChange = stopOnChange };
 
-        try { Directory.CreateDirectory(IpcDir); File.WriteAllText(RequestFile, id + "\n" + expression, Encoding.UTF8); }
+        try { Directory.CreateDirectory(RequestsDir); File.WriteAllText(RequestFileFor(id), expression, Encoding.UTF8); }
         catch (Exception e) { _watches.TryRemove(id, out _); return Err("couldn't write the watch request: " + e.Message); }
 
         // The component arms on a request-thread stack walk - poke one so it picks up this request now.
         if (!await _driver.PokeStackWalkAsync(ct))
         {
             _watches.TryRemove(id, out _);
+            try { File.Delete(RequestFileFor(id)); } catch { }
             return Err("not paused at a breakpoint - set a data breakpoint while stopped where the owning object is in scope");
         }
 
         for (int i = 0; i < 50 && !ct.IsCancellationRequested; i++)
         {
-            string st = TryRead(StatusFile);
-            if (st != null && st.StartsWith(id + " ", StringComparison.Ordinal))
+            string st = TryRead(StatusFileFor(id));   // component writes "armed" | "error: ..."
+            if (st == "armed")
+                return new JObject
+                {
+                    ["requestId"] = id,
+                    ["status"] = "armed",
+                    ["expression"] = expression,
+                    ["condition"] = condition,
+                    ["stopOnChange"] = stopOnChange,
+                    ["note"] = "watching. Poll vs_get_data_changes with this requestId for the change timeline"
+                               + (stopOnChange ? "; execution breaks on EACH change matching the condition." : ".")
+                               + " Disarm with vs_remove_data_breakpoint."
+                };
+            if (st != null && st.StartsWith("error", StringComparison.OrdinalIgnoreCase))
             {
-                string rest = st.Substring(id.Length + 1).Trim();
-                if (rest == "armed")
-                    return new JObject
-                    {
-                        ["requestId"] = id,
-                        ["status"] = "armed",
-                        ["expression"] = expression,
-                        ["condition"] = condition,
-                        ["stopOnChange"] = stopOnChange,
-                        ["note"] = "watching. Poll vs_get_data_changes with this requestId for the change timeline"
-                                   + (stopOnChange ? "; execution will break on a change matching the condition." : ".")
-                    };
                 _watches.TryRemove(id, out _);
-                return Err("arm failed: " + rest);
+                return Err("arm failed: " + st);
             }
             await Task.Delay(100, ct);
             if (i == 5) await _driver.PokeStackWalkAsync(ct);   // nudge again if the first walk raced the file write
         }
         _watches.TryRemove(id, out _);
         return Err("timed out arming the watch (is the owner object in scope at the current stop?)");
+    }
+
+    /// <summary>Disarm a watch - write the remove marker, drop our tracking, and (best-effort) poke a
+    /// walk so the component Closes the engine binding now.</summary>
+    public async Task<JObject> RemoveWatchAsync(string requestId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(requestId) || !_watches.ContainsKey(requestId))
+            return Err("unknown requestId - nothing to remove");
+
+        try { Directory.CreateDirectory(RemovesDir); File.WriteAllText(Path.Combine(RemovesDir, requestId), "", Encoding.UTF8); }
+        catch (Exception e) { return Err("couldn't write the remove request: " + e.Message); }
+
+        _watches.TryRemove(requestId, out _);          // stop routing changes / breaking immediately
+        bool poked = await _driver.PokeStackWalkAsync(ct);
+        return new JObject
+        {
+            ["requestId"] = requestId,
+            ["status"] = "removed",
+            ["note"] = poked
+                ? "disarmed; engine binding closed."
+                : "stopped tracking; the engine binding closes at the next stop (or when the debuggee exits)."
+        };
     }
 
     /// <summary>Return the accumulated change timeline for a watch.</summary>

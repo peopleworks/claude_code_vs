@@ -90,3 +90,35 @@ internal sealed class VsGetDataChangesTool : IIdeTool
         return Task.FromResult<object>(r);
     }
 }
+
+internal sealed class VsRemoveDataBreakpointTool : IIdeTool
+{
+    private readonly DataBreakpointBridge _bridge;
+    public VsRemoveDataBreakpointTool(DataBreakpointBridge bridge) => _bridge = bridge;
+
+    public string Name => "vs_remove_data_breakpoint";
+
+    public string Description =>
+        "Disarm a data breakpoint set with vs_set_data_breakpoint: stop watching/breaking and Close its "
+        + "engine binding. Pass the requestId. Safe to call anytime; if the debuggee is running the "
+        + "binding closes at the next stop. (Multiple data breakpoints can be armed at once - this "
+        + "removes just the one you name.)";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["requestId"] = new JObject { ["type"] = "string", ["description"] = "The requestId returned by vs_set_data_breakpoint." },
+        },
+        ["required"] = new JArray("requestId"),
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        var r = await _bridge.RemoveWatchAsync((string?)args?["requestId"], ct);
+        Ui.BridgeStatus.RecordDebugDrive();
+        Log.Info($"vs_remove_data_breakpoint -> {(r["error"] != null ? "error" : (string?)r["status"])}");
+        return r;
+    }
+}

@@ -292,6 +292,7 @@ internal sealed class BridgeHost : IDisposable
         // stream every change, optionally break-on-change. vs_set_* is gated drive; vs_get_* is read.
         yield return new VsSetDataBreakpointTool(dataBp);
         yield return new VsGetDataChangesTool(dataBp);
+        yield return new VsRemoveDataBreakpointTool(dataBp);
     }
 
     /// <summary>Best-effort workspace root for the lockfile: the open solution's directory, else none.</summary>
