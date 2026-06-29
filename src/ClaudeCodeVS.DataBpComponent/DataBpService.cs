@@ -1,20 +1,23 @@
 // Concord component that arms managed data breakpoints from code and streams every change to files
-// the extension tails. Productized result of spike-concord/ (proven 0.1-0.12), now MULTI-WATCH.
+// the extension tails. Productized result of spike-concord/ (proven 0.1-0.12). MULTI-WATCH via
+// per-ADDRESS engine bindings with fan-out (the engine binds one data breakpoint per address, so two
+// watches on the same value share ONE binding and the hit is fanned out to all of them).
 //
 // File-IPC contract under %TEMP%\claude-codevs-databp\ (extension <-> component, no DkmCustomMessage):
 //   requests\<id>.txt  (extension WRITES): line1 = expression (owner.field)
 //   removes\<id>       (extension WRITES): empty marker -> disarm watch <id>
 //   status\<id>.txt    (component WRITES): "armed" | "error: <msg>" | "removed"
-//   events.jsonl       (component APPENDS): one JSON line per change {requestId, expression, change}
+//   events.jsonl       (component APPENDS): one JSON line per (watcher, change) {requestId, expression, change}
 //
-// Multi-watch: each watch arms its OWN DkmPendingDataBreakpoint with a FRESH per-request SourceId
-// (Guid.NewGuid()), so OnDataBreakpointHit routes by bp.SourceId -> the exact watch (no cross-fire /
-// mislabel). Disarm Closes that watch's pending breakpoint.
+// One Binding per expression: its own DkmPendingDataBreakpoint + fresh SourceId, plus a list of
+// watcher requestIds. OnDataBreakpointHit routes by bp.SourceId -> Binding, then appends one event per
+// watcher (fan-out). A second watch on the same expression reuses the binding (no second Create, which
+// the engine would shadow). Per-watch condition/stopOnChange live in the extension, so fan-out keeps
+// them independent.
 //
 // Proven constraints: arm on the REQUEST thread (FilterNextFrame); OUR OWN SourceId (never the
 // engine's); Enable async (BeginExecution); drill owner->field child for GetDataBreakpointInfo. In-
 // engine halt is impossible from the hit notification, so STOP is the extension's job (EnvDTE).
-// All Dkm signatures verified vs engine 17.14.
 
 using System;
 using System.Collections.Generic;
@@ -39,22 +42,21 @@ namespace ClaudeCodeVs.DataBp
         private static string StatusDir => Path.Combine(IpcDir, "status");
         private static string EventsFile => Path.Combine(IpcDir, "events.jsonl");
 
-        private sealed class WatchInfo
+        // One engine binding per expression; many watcher requestIds can share it (fan-out).
+        private sealed class Binding
         {
-            public string RequestId;
             public string Expression;
             public Guid SourceId;
             public DkmPendingDataBreakpoint Pending;
+            public readonly List<string> Watchers = new List<string>();   // requestIds sharing this binding
         }
 
-        private static readonly Dictionary<string, WatchInfo> _watches = new Dictionary<string, WatchInfo>(); // requestId -> watch
-        private static readonly Dictionary<Guid, WatchInfo> _bySource = new Dictionary<Guid, WatchInfo>();     // sourceId -> watch
+        private static readonly Dictionary<string, Binding> _byExpr = new Dictionary<string, Binding>();   // expression -> binding
+        private static readonly Dictionary<Guid, Binding> _bySource = new Dictionary<Guid, Binding>();      // sourceId  -> binding
+        private static readonly Dictionary<string, string> _watchExpr = new Dictionary<string, string>();   // requestId -> expression
         private static readonly HashSet<string> _processed = new HashSet<string>();   // armed-or-failed ids (don't retry)
-        // GC roots for the async Enable (the completion routine never fires, and the native side doesn't
-        // root our managed callback across BeginExecution; keep them alive for the session). Bounded by
-        // the number of arms, so never cleared.
-        private static readonly List<object> _enableKeepAlive = new List<object>();
-        private static bool _busy;   // re-entrancy guard (arming evaluates, which can re-walk the stack)
+        private static readonly List<object> _enableKeepAlive = new List<object>();   // GC roots for async Enable (session-lifetime)
+        private static bool _busy;   // re-entrancy guard
 
         // ---------- request-thread loop: process removes + new requests on each stack walk ----------
         DkmStackWalkFrame[] IDkmCallStackFilter.FilterNextFrame(DkmStackContext stackContext, DkmStackWalkFrame input)
@@ -91,7 +93,7 @@ namespace ClaudeCodeVs.DataBp
             foreach (string f in files)
             {
                 string id = Path.GetFileNameWithoutExtension(f);
-                if (_watches.ContainsKey(id) || _processed.Contains(id)) continue;
+                if (_watchExpr.ContainsKey(id) || _processed.Contains(id)) continue;
 
                 string expression;
                 try { string[] lines = File.ReadAllLines(f); expression = lines.Length > 0 ? lines[0].Trim() : null; }
@@ -106,7 +108,16 @@ namespace ClaudeCodeVs.DataBp
                     continue;
                 }
 
-                string err = TryArm(frame, id, expression.Substring(0, dot), expression.Substring(dot + 1));
+                // Fan-out: if a binding already watches this expression, just subscribe this requestId.
+                if (_byExpr.TryGetValue(expression, out Binding existing))
+                {
+                    existing.Watchers.Add(id);
+                    _watchExpr[id] = expression;
+                    WriteStatus(id, "armed");
+                    continue;
+                }
+
+                string err = TryArmNew(frame, id, expression, expression.Substring(0, dot), expression.Substring(dot + 1));
                 if (err == null) WriteStatus(id, "armed");
                 else if (err != "retry") { _processed.Add(id); WriteStatus(id, "error: " + err); }
                 // "retry": owner not in scope yet - leave for a later stack walk.
@@ -122,21 +133,26 @@ namespace ClaudeCodeVs.DataBp
             foreach (string m in markers)
             {
                 string id = Path.GetFileName(m);
-                if (_watches.TryGetValue(id, out WatchInfo w))
+                if (_watchExpr.TryGetValue(id, out string expr) && _byExpr.TryGetValue(expr, out Binding b))
                 {
-                    try { w.Pending?.Close(); } catch { }   // Close the engine binding (request thread - we created it here)
-                    _watches.Remove(id);
-                    _bySource.Remove(w.SourceId);
+                    b.Watchers.Remove(id);
+                    if (b.Watchers.Count == 0)   // last watcher gone - Close the engine binding
+                    {
+                        try { b.Pending?.Close(); } catch { }
+                        _byExpr.Remove(expr);
+                        _bySource.Remove(b.SourceId);
+                    }
                     WriteStatus(id, "removed");
                 }
+                _watchExpr.Remove(id);
                 _processed.Remove(id);
                 try { File.Delete(m); } catch { }
                 try { File.Delete(Path.Combine(RequestsDir, id + ".txt")); } catch { }   // so it can't re-arm
             }
         }
 
-        // null = armed (added to _watches); "retry" = owner not in scope yet; else an error message.
-        private static string TryArm(DkmStackWalkFrame frame, string id, string owner, string field)
+        // null = armed (binding created); "retry" = owner not in scope yet; else an error message.
+        private static string TryArmNew(DkmStackWalkFrame frame, string id, string expression, string owner, string field)
         {
             DkmThread thread = frame.Thread;
             DkmProcess process = frame.Process;
@@ -175,8 +191,7 @@ namespace ClaudeCodeVs.DataBp
             if (!string.IsNullOrEmpty(infoErr) || string.IsNullOrEmpty(info.Identifier))
                 return string.IsNullOrEmpty(infoErr) ? "no data-breakpoint info" : infoErr.Replace("\r", " ").Replace("\n", " ");
 
-            // OUR OWN per-request SourceId so OnDataBreakpointHit can route by SourceId -> this watch.
-            Guid sourceId = Guid.NewGuid();
+            Guid sourceId = Guid.NewGuid();   // OUR OWN per-binding SourceId
             DkmPendingDataBreakpoint pending = DkmPendingDataBreakpoint.Create(
                 process, sourceId, compilerId, thread, false, info.Identifier, (int)info.Size, null);
 
@@ -186,21 +201,23 @@ namespace ClaudeCodeVs.DataBp
             pending.Enable(ewl, cb);
             ewl.BeginExecution();   // async; Execute() would self-deadlock
 
-            var wi = new WatchInfo { RequestId = id, Expression = owner + "." + field, SourceId = sourceId, Pending = pending };
-            _watches[id] = wi;
-            _bySource[sourceId] = wi;
+            var b = new Binding { Expression = expression, SourceId = sourceId, Pending = pending };
+            b.Watchers.Add(id);
+            _byExpr[expression] = b;
+            _bySource[sourceId] = b;
+            _watchExpr[id] = expression;
             return null;
         }
 
-        // ---------- a change: route by SourceId to the owning watch, append to events.jsonl ----------
+        // ---------- a change: route by SourceId to the binding, FAN OUT to every subscribed watcher ----------
         void IDkmDataBreakpointHitNotification.OnDataBreakpointHit(
             DkmBoundBreakpoint bp, DkmThread thread, bool hasException, string message, DkmEventDescriptorS eventDescriptor)
         {
             try
             {
-                if (bp == null) return;
-                if (!_bySource.TryGetValue(bp.SourceId, out WatchInfo w)) return;   // not one of ours
-                AppendEvent(w.RequestId, w.Expression, message);
+                if (bp == null || !_bySource.TryGetValue(bp.SourceId, out Binding b)) return;   // not ours
+                foreach (string requestId in b.Watchers.ToArray())
+                    AppendEvent(requestId, b.Expression, message);
             }
             catch { }
             // No in-engine halt here (event-thread restriction) - the extension calls EnvDTE Break.
