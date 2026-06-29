@@ -140,6 +140,18 @@ All tools live on the `vs-debug` MCP server and appear to the model as `mcp__vs-
 | `vs_start_debugging` / `vs_stop_debugging` | Start a session (F5, runs to the first breakpoint) / stop it (Shift+F5). |
 | `vs_attach` / `vs_detach` | Attach to a **running** local process (by pid or name) — a hosted web app, service, or desktop app — then detach (it keeps running). |
 
+### Data breakpoints (watch a value)
+
+Managed "break/trace when a value changes" — a capability with no EnvDTE/automation surface (VS's own UI can't set it programmatically). Backed by a bundled Concord debug-engine component (`src/ClaudeCodeVS.DataBpComponent/`) driven over file-IPC; the stop itself is an EnvDTE `Break()` the extension issues on a matching change.
+
+| Tool | Action |
+|---|---|
+| `vs_set_data_breakpoint` | Watch a managed **instance field** (`owner.field`, e.g. `order.Total`) while paused. Streams every change. Optional `condition` (`> 700`, `== 0`, `!= 5`, …) and `stopOnChange` **break on each matching change** so you can inspect locals at the mutation. Returns a `requestId`. Gated (drive). |
+| `vs_get_data_changes` | The structured mutation timeline for a `requestId`: `changes: [{previous, current, type}]` + `broke`/`breakCount`. Read-only — poll it to see *how* a value got bad, then `vs_set_breakpoint` at that write site. |
+| `vs_remove_data_breakpoint` | Disarm a watch (Closes the engine binding). |
+
+Multiple watches run at once (even several on the same value, via per-address fan-out). Caveats: **instance fields only** (statics/locals/struct fields unsupported by the engine); debuggee must be .NET Core 3.0+/.NET 5.0.3+, x64; the stop lands **one statement after** the write (data breakpoints fire once the write completes).
+
 ### Push (no tool call)
 
 The `UserPromptSubmit` hook injects the current break state (stop location, call stack, current-frame args/locals) into context whenever you submit a prompt while paused.

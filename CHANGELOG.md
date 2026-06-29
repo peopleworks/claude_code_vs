@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.8.1 - 2026-06-29
+
+**Managed data breakpoints** — "break (or trace) when a value changes." This has *no* EnvDTE/automation surface and VS's own UI can't set it programmatically; we reach it with a bundled **Concord (debug-engine) component** driven over file-IPC. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+
+### Features
+
+- **`vs_set_data_breakpoint`** — watch a managed instance field (`owner.field`) while paused; streams every change (old→new). Optional `condition` (`> 700`, `== 0`, `!= 5`, …) and `stopOnChange` break execution on **each** matching change so you can inspect locals at the mutation. Multiple watches run concurrently — even several on the same value.
+- **`vs_get_data_changes`** — the structured mutation timeline for a watch: `changes: [{previous, current, type}]` plus `broke`/`breakCount`. The "how did this value get here" trace — find the offending write, then set a normal breakpoint at that site.
+- **`vs_remove_data_breakpoint`** — disarm a watch (Closes the engine binding).
+
+### Notes
+
+- New `src/ClaudeCodeVS.DataBpComponent/` — an IDE-level Concord component shipped in the VSIX as a `DebuggerEngineExtension` asset. It arms from the **request thread** (`IDkmCallStackFilter`), evaluates owner→field child for `GetDataBreakpointInfo`, and uses its **own** breakpoint SourceId (never the engine's — that crashes the breakpoint manager). The extension-side `DataBreakpointBridge` drives it over file-IPC under `%TEMP%\claude-codevs-databp\` and halts via EnvDTE `Break()` on a matching change (the engine can't halt from its hit notification). **One engine binding per address with fan-out**, so concurrent watches on the same value all fire and apply their conditions independently.
+- **32** `vs-debug` tools total. `vs_set_data_breakpoint` is gated behind "Allow Claude to drive debugger"; `vs_get_data_changes` (read) and `vs_remove_data_breakpoint` (disarm) are not.
+- **Managed instance fields only** — statics, stack locals and struct fields are unsupported by the engine. Debuggee must be .NET Core 3.0+ / .NET 5.0.3+, x64. The stop lands **one statement after** the write (the data breakpoint fires once the write completes — read the stack and set a normal breakpoint at the write site for an exact landing).
+- Proven end-to-end first in `spike-concord/` (the full make-or-break ladder — Rung 0 component-loads → the cracked `DkmPendingDataBreakpoint`/`GetDataBreakpointInfo` arm chain → crash fix → halt-via-extension), then productized into the extension and verified live against the `DataBpTarget` fixture (conditional, recurring, multi-watch, disarm).
+
 ## 1.6.0 - 2026-06-27
 
 ClrMD memory / GC / ThreadPool diagnostics — four new read tools on the same out-of-process worker. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).

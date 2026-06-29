@@ -29,6 +29,7 @@ internal sealed class BridgeHost : IDisposable
     private IdeWebSocketServer? _server;
     private WorkspaceWatcher? _watcher;
     private Debugging.DebuggerDriver? _driver; // Phase 3: drives the debugger (continue/step/breakpoints)
+    private Debugging.DataBreakpointBridge? _dataBpBridge; // managed data breakpoints (Concord component bridge)
 
     public BridgeHost(AsyncPackage package) => _package = package;
 
@@ -98,7 +99,10 @@ internal sealed class BridgeHost : IDisposable
         // dormant); reuses the same McpServer dispatch over a different tool set. The driver (Phase 3)
         // owns the IVsDebugger event subscription + the await-next-break coordination for the drive tools.
         _driver = new Debugging.DebuggerDriver();
-        _server.DebugMcp = new McpServer(new ToolRegistry(BuildDebugTools(_driver)));
+        // Managed data breakpoints: the file-IPC bridge to the bundled Concord component. Owns a
+        // background tailer of the change stream; needs the driver for stop-on-change (EnvDTE Break).
+        _dataBpBridge = new Debugging.DataBreakpointBridge(_driver);
+        _server.DebugMcp = new McpServer(new ToolRegistry(BuildDebugTools(_driver, _dataBpBridge)));
 
         // Run the accept loop in the background. If it ever faults (not a normal shutdown), delete the
         // lockfile so we don't keep advertising a dead bridge that blocks reconnection (issue #5043).
@@ -248,7 +252,7 @@ internal sealed class BridgeHost : IDisposable
     /// in a separate registry so they're real, callable MCP tools the CLI surfaces to the model - unlike
     /// the IDE-protocol tools above, which the CLI advertises but keeps dormant.
     /// </summary>
-    private static IEnumerable<IIdeTool> BuildDebugTools(Debugging.DebuggerDriver driver)
+    private static IEnumerable<IIdeTool> BuildDebugTools(Debugging.DebuggerDriver driver, Debugging.DataBreakpointBridge dataBp)
     {
         // Phase 2 - read/pull (ungated).
         yield return new VsDebugStateTool();
@@ -283,6 +287,12 @@ internal sealed class BridgeHost : IDisposable
         // Tier 1 - attach to a real running app (web / service / desktop), not just F5 launch.
         yield return new VsAttachTool(driver);
         yield return new VsDetachTool(driver);
+
+        // Managed data breakpoints (Concord component + file-IPC bridge): watch an instance field,
+        // stream every change, optionally break-on-change. vs_set_* is gated drive; vs_get_* is read.
+        yield return new VsSetDataBreakpointTool(dataBp);
+        yield return new VsGetDataChangesTool(dataBp);
+        yield return new VsRemoveDataBreakpointTool(dataBp);
     }
 
     /// <summary>Best-effort workspace root for the lockfile: the open solution's directory, else none.</summary>
@@ -376,6 +386,7 @@ internal sealed class BridgeHost : IDisposable
         try { _cts.Cancel(); } catch { /* shutting down */ }
         _watcher?.Dispose();
         _driver?.Dispose(); // unadvise the IVsDebugger event sink (best-effort)
+        _dataBpBridge?.Dispose(); // stop the data-breakpoint change tailer
         _lockfile?.Delete();
         _cts.Dispose();
     }

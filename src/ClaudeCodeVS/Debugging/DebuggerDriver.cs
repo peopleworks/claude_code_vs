@@ -126,6 +126,53 @@ internal sealed class DebuggerDriver : IVsDebuggerEvents, IDisposable
         finally { EndCommand(); }
     }
 
+    /// <summary>
+    /// Force a Concord stack walk while paused (enumerate the current thread's frames). The managed
+    /// data-breakpoint component arms on IDkmCallStackFilter.FilterNextFrame (the request thread), so
+    /// after the DataBreakpointBridge writes a watch request we poke a walk here to make the component
+    /// pick it up immediately. Returns false if not paused (the owner expression only resolves at a stop).
+    /// Read-only (no drive command, no break to await) - safe outside the BeginCommand gate.
+    /// </summary>
+    public async Task<bool> PokeStackWalkAsync(CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var dbg = Dte()?.Debugger;
+        if (dbg == null) return false;
+        try
+        {
+            if (dbg.CurrentMode != dbgDebugMode.dbgBreakMode) return false;
+            var th = dbg.CurrentThread;
+            if (th == null) return false;
+            int n = 0;
+            foreach (StackFrame _ in th.StackFrames) { if (++n > 64) break; } // enumerating forces the walk
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Issue a raw Break All (EnvDTE Break) for the data-breakpoint tailer to halt on a matching change.
+    /// Deliberately does NOT go through the drive gate (BeginCommand) or the await-next-break machinery:
+    /// a model vs_continue/step is typically already in flight HOLDING that gate while parked on the next
+    /// break, so a gated BreakAllAsync would be rejected and never fire. This raw Break trips the
+    /// debuggee; the in-flight command's parked waiter (OnModeChange) catches it and returns at the
+    /// mutation. If nothing is awaiting, the model sees the stop on its next vs_debug_state poll. Returns
+    /// true only if a break was actually issued (the debuggee was running).
+    /// </summary>
+    public async Task<bool> RequestBreakAsync(CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var dbg = Dte()?.Debugger;
+        if (dbg == null) return false;
+        try
+        {
+            if (dbg.CurrentMode != dbgDebugMode.dbgRunMode) return false; // only break a running debuggee
+            dbg.Break(false); // Break All; WaitForBreakOrEnd=false (never block the UI thread)
+            return true;
+        }
+        catch { return false; }
+    }
+
     // ===== session control (start = F5 + await first break; stop = Shift+F5) =====
 
     /// <summary>Start a debug session (only from design mode) and run to the first break (or completion).</summary>
