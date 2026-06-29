@@ -112,6 +112,15 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ClaudeCodeVS.Protocol\ClaudeCodeVS.Protocol.csproj" />
+    <!-- The Concord data-breakpoint component. OUTPUT-ONLY (ReferenceOutputAssembly=false): VS's
+         debug engine loads it via its .vsdconfig (declared as a DebuggerEngineExtension asset in the
+         manifest); the extension never references its code. The output groups carry the component
+         DLL + the compiled .vsdconfig into the .vsix root. -->
+    <ProjectReference Include="..\ClaudeCodeVS.DataBpComponent\ClaudeCodeVS.DataBpComponent.csproj">
+      <Name>ClaudeCodeVS.DataBpComponent</Name>
+      <IncludeOutputGroupsInVSIX>BuiltProjectOutputGroup%3bBuiltProjectOutputGroupDependencies%3bGetCopyToOutputDirectoryItems%3bSatelliteDllsProjectOutputGroup%3b</IncludeOutputGroupsInVSIX>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
 
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Registration for the managed-data-breakpoint Concord component. Compiled to a binary .vsdconfig by
+  VSDConfigTool and shipped as a DebuggerEngineExtension asset in the extension VSIX. IDE-level
+  (ComponentLevel > 100,000) - the arm pipeline (GetDataBreakpointInfo/Enable) is documented IDE/
+  request-side only. NoFilter = runs on all managed sessions.
+-->
+<Configuration xmlns="http://schemas.microsoft.com/vstudio/vsdconfig/2008">
+  <ManagedComponent
+    ComponentId="EA3D30D8-6186-49BE-B4F4-3CE44540E5ED"
+    ComponentLevel="9995000"
+    AssemblyName="ClaudeCodeVS.DataBpComponent">
+    <Class Name="ClaudeCodeVs.DataBp.DataBpService">
+      <Implements>
+        <InterfaceGroup>
+          <NoFilter/>
+          <Interface Name="IDkmCallStackFilter"/>
+          <Interface Name="IDkmDataBreakpointHitNotification"/>
+        </InterfaceGroup>
+      </Implements>
+    </Class>
+  </ManagedComponent>
+</Configuration>
