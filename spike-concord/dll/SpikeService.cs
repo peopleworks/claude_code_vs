@@ -39,14 +39,17 @@ namespace ConcordSpike
         private const string OwnerExpression = "target";
         private const string FieldName = "Value";
 
-        // SourceId observed from a UI-set "Break When Value Changes" - reuse so VS treats ours
-        // identically to a user breakpoint.
-        private static readonly Guid UserDataBpSourceId = new Guid("f7a1b1d1-d4ee-4e0e-9bac-bdaa38c83fe3");
+        // DIAGNOSTIC (0.8.0): the UI's data-BP SourceId is f7a1b1d1-... Reusing the ENGINE's OWN
+        // SourceId for a breakpoint WE create may confuse the engine's breakpoint manager (it owns
+        // that id) - a candidate cause of the crash-on-continue AND the never-delivered completion
+        // (the engine could route our Enable callback to ITS handler). Test with OUR OWN unique id.
+        private static readonly Guid OurDataBpSourceId = new Guid("047dd4c9-7540-43bf-be25-e824b1316f44");
 
         // One-shot: _armed flips true only on a SUCCESSFUL arm (so we retry on later stack walks if
         // the field isn't in scope yet). _arming guards against re-entrancy while an attempt runs.
         private static bool _armed;
         private static bool _arming;
+        private static int _postArmBeats;   // diagnostic: count stack walks AFTER arming (proves the arm itself didn't crash)
 
         // GC roots for the async Enable. The native engine does NOT root our managed work list or
         // completion delegate across BeginExecution, so if a GC runs before Enable completes, the
@@ -64,6 +67,10 @@ namespace ConcordSpike
         {
             if (input == null)
                 return null;
+
+            // Diagnostic: if we get stack walks AFTER arming, the arm itself didn't crash (the crash
+            // is later, on continue). Logs the first few only.
+            if (_armed && _postArmBeats < 3) { _postArmBeats++; Log.Line("  [alive] post-arm stack walk #" + _postArmBeats); }
 
             // Arm on the first stack-walk frame where the expression resolves (request-side context).
             if (!_armed && !_arming)
@@ -163,27 +170,33 @@ namespace ConcordSpike
                 return false;
             }
 
-            // 4. create + enable the pending data breakpoint
+            // 4. create + enable the pending data breakpoint - with OUR OWN SourceId (diagnostic)
             DkmPendingDataBreakpoint pending = DkmPendingDataBreakpoint.Create(
-                process, UserDataBpSourceId, compilerId, thread, false, info.Identifier, (int)info.Size, null);
-            Log.Line("  created DkmPendingDataBreakpoint; enabling (the IDE-level Enable)...");
+                process, OurDataBpSourceId, compilerId, thread, false, info.Identifier, (int)info.Size, null);
+            Log.Line("  created DkmPendingDataBreakpoint (SourceId=OURS " + OurDataBpSourceId + "); enabling...");
 
             // Enable is async (BeginExecution, never the blocking Execute() - that self-deadlocks ->
             // E_XAPI_COMPLETION_ROUTINE_RELEASED). On the REQUEST thread (here) the completion is
             // delivered normally; on the event thread it never was (the v3/v4 crash).
             _enablePending = pending;
-            _enableWl = DkmWorkList.Create(null);
+            // DIAGNOSTIC: a whole-list completion routine (fires when the work list itself finishes).
+            // If THIS logs but the per-item routine doesn't - or neither does - we learn exactly where
+            // the async Enable stalls.
+            _enableWl = DkmWorkList.Create(wl3 =>
+            {
+                Log.Line("  [whole-list] Enable work list COMPLETED. IsCanceled=" + wl3.IsCanceled);
+            });
             _enableCb = ar =>
             {
                 int e = ar.ErrorCode;
                 Log.Line(e == 0
-                    ? ">>> ARMED OK (async). A write to " + OwnerExpression + "." + FieldName + " should now break with NO user data BP."
-                    : ">>> Enable failed async: errorCode=" + e + " (0x" + e.ToString("X8") + ")");
+                    ? ">>> ARMED OK (per-item completion). write to " + OwnerExpression + "." + FieldName + " should break."
+                    : ">>> Enable failed (per-item): errorCode=" + e + " (0x" + e.ToString("X8") + ")");
                 _enableWl = null; _enablePending = null; _enableCb = null;   // release roots
             };
             _enablePending.Enable(_enableWl, _enableCb);
             _enableWl.BeginExecution();
-            Log.Line("  Enable issued (async, non-blocking, rooted) from request thread.");
+            Log.Line("  Enable issued from request thread; wl.IsCanceled=" + _enableWl?.IsCanceled);
             return true;
         }
 
