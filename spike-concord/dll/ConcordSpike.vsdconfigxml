@@ -22,10 +22,9 @@
       <Implements>
         <InterfaceGroup>
           <NoFilter/>
-          <!-- Rung 0 canary -->
+          <!-- Request-thread arm trigger (+ load canary) -->
           <Interface Name="IDkmCallStackFilter"/>
-          <!-- Rung 1a observation: get called when breakpoints hit -->
-          <Interface Name="IDkmBoundBreakpointHitNotification"/>
+          <!-- Change events -->
           <Interface Name="IDkmDataBreakpointHitNotification"/>
         </InterfaceGroup>
       </Implements>
