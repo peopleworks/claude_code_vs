@@ -43,8 +43,10 @@ namespace ConcordSpike
         // identically to a user breakpoint.
         private static readonly Guid UserDataBpSourceId = new Guid("f7a1b1d1-d4ee-4e0e-9bac-bdaa38c83fe3");
 
-        // One-shot: arm on the first normal breakpoint only.
+        // One-shot: _armed flips true only on a SUCCESSFUL arm (so we retry on later stack walks if
+        // the field isn't in scope yet). _arming guards against re-entrancy while an attempt runs.
         private static bool _armed;
+        private static bool _arming;
 
         // GC roots for the async Enable. The native engine does NOT root our managed work list or
         // completion delegate across BeginExecution, so if a GC runs before Enable completes, the
@@ -54,11 +56,24 @@ namespace ConcordSpike
         private static DkmPendingDataBreakpoint _enablePending;
         private static DkmCompletionRoutine<DkmEnablePendingBreakpointAsyncResult> _enableCb;
 
-        // ---------- Rung 0 canary ----------
+        // ---------- Rung 0 canary + Rung 1b (v5) REQUEST-THREAD arming trigger ----------
+        // FilterNextFrame runs on the REQUEST thread (issue #61: the same arm code that hangs from a
+        // breakpoint-hit notification works here). The arm pipeline (GetDataBreakpointInfo / Enable)
+        // is documented IDE-component/request-side only, so this is the correct context to arm from.
         DkmStackWalkFrame[] IDkmCallStackFilter.FilterNextFrame(DkmStackContext stackContext, DkmStackWalkFrame input)
         {
             if (input == null)
                 return null;
+
+            // Arm on the first stack-walk frame where the expression resolves (request-side context).
+            if (!_armed && !_arming)
+            {
+                _arming = true;
+                try { if (TryArmDataBreakpoint(input)) _armed = true; }
+                catch (Exception ex) { Log.Line("  !! arm threw: " + ex); }
+                finally { _arming = false; }
+            }
+
             SpikeDataItem dataItem = SpikeDataItem.GetInstance(stackContext);
             if (dataItem.State == State.Initial)
             {
@@ -73,32 +88,26 @@ namespace ConcordSpike
             return new DkmStackWalkFrame[1] { input };
         }
 
-        // ---------- Rung 1b: arm on the first normal breakpoint ----------
+        // Kept only for observation; arming moved OFF this event-thread notification (it's the wrong
+        // context - see v5 above).
         void IDkmBoundBreakpointHitNotification.OnBoundBreakpointHit(
             DkmBoundBreakpoint bp, DkmThread thread, bool hasException, DkmEventDescriptorS eventDescriptor)
         {
-            try
-            {
-                Log.Line("---- BOUND BP HIT (normal breakpoint) ----");
-                if (!_armed)
-                    TryArmDataBreakpoint(thread);
-            }
-            catch (Exception ex) { Log.Line("  !! OnBoundBreakpointHit threw: " + ex); }
         }
 
-        private static void TryArmDataBreakpoint(DkmThread thread)
+        // Returns true only when the arm pipeline reached the Enable issue (success).
+        private static bool TryArmDataBreakpoint(DkmStackWalkFrame frame)
         {
-            Log.Line(">>> Rung 1b: arming data breakpoint on " + OwnerExpression + "." + FieldName);
-            DkmProcess process = thread.Process;
+            DkmThread thread = frame.Thread;
+            DkmProcess process = frame.Process;
+            if (thread == null || process == null) return false;
 
             DkmClrRuntimeInstance clr = null;
             foreach (DkmRuntimeInstance ri in process.GetRuntimeInstances())
                 if (ri is DkmClrRuntimeInstance c) { clr = c; break; }
-            if (clr == null) { Log.Line("  abort: no DkmClrRuntimeInstance"); return; }
+            if (clr == null) return false;
 
-            DkmStackWalkFrame frame = thread.GetTopStackFrame();
-            if (frame == null) { Log.Line("  abort: no top stack frame"); return; }
-
+            Log.Line(">>> Rung 1b v5 (request thread): arming data breakpoint on " + OwnerExpression + "." + FieldName);
             var compilerId = new DkmCompilerId(DkmVendorId.Microsoft, DkmLanguageId.CSharp);
             DkmLanguage language = DkmLanguage.Create("C#", compilerId);
             DkmInspectionSession session = DkmInspectionSession.Create(process, null);
@@ -117,9 +126,9 @@ namespace ConcordSpike
             var ownerSuccess = ownerResult as DkmSuccessEvaluationResult;
             if (ownerSuccess == null)
             {
-                Log.Line("  abort: owner '" + OwnerExpression + "' did not evaluate: " +
-                         ((ownerResult as DkmFailedEvaluationResult)?.ErrorMessage ?? ownerResult?.GetType().Name ?? "<null>"));
-                return;
+                // Expected on stack walks before 'target' is in scope - stay un-armed and retry later.
+                Log.Line("  (owner '" + OwnerExpression + "' not in scope yet; will retry)");
+                return false;
             }
             Log.Line("  owner evaluated: Type=" + (ownerSuccess.Type ?? "<null>"));
 
@@ -140,7 +149,7 @@ namespace ConcordSpike
                     if (ch is DkmSuccessEvaluationResult s && s.Name == FieldName) fieldResult = s;
                 }
             }
-            if (fieldResult == null) { Log.Line("  abort: field '" + FieldName + "' not found among children"); return; }
+            if (fieldResult == null) { Log.Line("  abort: field '" + FieldName + "' not found among children"); return false; }
             Log.Line("  field child: Name=" + fieldResult.Name + " Value=" + (fieldResult.Value ?? "<null>") + " Type=" + (fieldResult.Type ?? "<null>"));
 
             // 3. mint the data-breakpoint binding from the CHILD result
@@ -151,7 +160,7 @@ namespace ConcordSpike
             if (!string.IsNullOrEmpty(infoErr) || string.IsNullOrEmpty(info.Identifier))
             {
                 Log.Line("  abort: no data-breakpoint info");
-                return;
+                return false;
             }
 
             // 4. create + enable the pending data breakpoint
@@ -159,14 +168,9 @@ namespace ConcordSpike
                 process, UserDataBpSourceId, compilerId, thread, false, info.Identifier, (int)info.Size, null);
             Log.Line("  created DkmPendingDataBreakpoint; enabling (the IDE-level Enable)...");
 
-            // Enable is an IDE-level (>100,000) op whose completion must be re-dispatched back onto
-            // THIS event thread. Driving it with the synchronous Execute() pump parks the very thread
-            // the reply needs -> self-deadlock until a ~67s timeout, surfaced as
-            // E_XAPI_COMPLETION_ROUTINE_RELEASED (0x8EDE000C). Use BeginExecution(): it returns
-            // immediately, and the completion routine fires asynchronously once we return from the
-            // notification and the dispatcher is free. (Same "issue -> await, never block the
-            // dispatcher" discipline as DebuggerDriver.)
-            _armed = true;   // one-shot: set before issuing so a re-entrant hit can't double-arm
+            // Enable is async (BeginExecution, never the blocking Execute() - that self-deadlocks ->
+            // E_XAPI_COMPLETION_ROUTINE_RELEASED). On the REQUEST thread (here) the completion is
+            // delivered normally; on the event thread it never was (the v3/v4 crash).
             _enablePending = pending;
             _enableWl = DkmWorkList.Create(null);
             _enableCb = ar =>
@@ -179,7 +183,8 @@ namespace ConcordSpike
             };
             _enablePending.Enable(_enableWl, _enableCb);
             _enableWl.BeginExecution();
-            Log.Line("  Enable issued (async, non-blocking, rooted); returning from notification.");
+            Log.Line("  Enable issued (async, non-blocking, rooted) from request thread.");
+            return true;
         }
 
         // ---------- observation: a DATA breakpoint hit (UI-set OR our armed one) ----------
