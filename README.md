@@ -18,7 +18,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 - **Reject with feedback** - reject an edit and tell Claude what to change; it reconsiders with your note.
 - **Run wild (auto-accept)** - a panel toggle to apply edits without opening the diff, for when you want to let it cook. Resets each session.
 - **Diagnostics sharing** - Claude reads Visual Studio's compiler errors/warnings (C# and C++) and fixes them.
-- **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can *drive* the debugger - continue, step, set breakpoints, **break at the throw site of an exception**, **attach to a running app** (a hosted web service or desktop app, not just F5), and **pause a hung process to untangle a deadlock** (following the lock-ownership chain across threads to the exact cycle) - to corner a bug instead of guessing from source. Full reference: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
+- **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can *drive* the debugger - continue, step, set breakpoints, **break at the throw site of an exception**, **set a data breakpoint that breaks (or traces the full change history) the moment a value changes**, **attach to a running app** (a hosted web service or desktop app, not just F5), and **pause a hung process to untangle a deadlock** (following the lock-ownership chain across threads to the exact cycle) - to corner a bug instead of guessing from source. Full reference: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 - **Selection context** - Claude automatically knows the file and lines you're looking at.
 - **Live panel** - a dockable *Claude Code* panel: connection status, edit decisions, and **token usage + estimated cost** (latest call vs cumulative session).
 
@@ -41,6 +41,8 @@ Then the fix opened in the native diff, ready to accept or reject:
 Full walkthrough, the complete tool list, and the limitations are in **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
 It's grown well past stepping since. Claude can now **attach to a running app** (debug a hosted web service or an already-running desktop app, not just F5), **break at the origin of an exception** instead of the catch that swallows it, and **pause a hung process to untangle a deadlock** — reading the lock-ownership chain across threads to pin the exact cycle. There's a worked deadlock walkthrough (LockJam) in **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
+
+And newest (1.8.1): **managed data breakpoints** — point Claude at a field and it breaks, or traces the *complete* change history (every old→new value, in order), the instant the value changes — conditionally (`> 700`), on every change, on several values at once. That's "break when this value changes," a watch Visual Studio's own UI can't set programmatically and that has no automation API — so it's genuinely new ground for catching the write that corrupts your state.
 
 ## Requirements
 
