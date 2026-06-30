@@ -18,4 +18,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <!-- A NuGet ref so the vs-semantic decompile canary can hit both a framework symbol
+       (System.Linq.Enumerable) and a NuGet one (Newtonsoft.Json.JsonConvert). -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
 </Project>

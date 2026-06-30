@@ -13,6 +13,7 @@
 - **`vs_find_implementations`** — concrete implementors of an interface/member, overrides of an abstract/virtual member, or derived classes of a base. Exact (grep's `: IFoo` misses indirect + explicit implementations).
 - **`vs_call_hierarchy`** — `callers` (default): who **transitively** calls a method, as a depth-limited, cycle-guarded tree with call sites (impact analysis). `callees`: what it directly calls.
 - **`vs_type_hierarchy`** — `derived` (default): subtypes/implementors; `base`: the base-class chain + implemented interfaces.
+- **`vs_decompile`** — **read the body of a method in a referenced DLL** (framework or NuGet) that ships with no source — the one thing reading the repo fundamentally can't do. Decompiles to C# the way Go-To-Definition does (ILSpy), returning real implementation bodies. Returns just the requested member (`wholeType:true` for the whole type); marks `bodyAvailable` + `source` (`decompiled`/`source`). Core BCL types (forwarded to `System.Private.CoreLib`) only decompile to a stub, so it **auto-retries via SourceLink** to fetch the real `dotnet/runtime` source (bounded 20s; `preferSource:true` to force source-first).
 
 ### Notes
 

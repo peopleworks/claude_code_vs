@@ -79,6 +79,49 @@ internal sealed class VsGetSelectionTool : IIdeTool
     }
 }
 
+/// <summary>vs_decompile — a framework/NuGet symbol with no source → decompiled C# (the Go-To-Definition path).</summary>
+internal sealed class VsDecompileTool : IIdeTool
+{
+    public string Name => "vs_decompile";
+    public string Description =>
+        "Decompile a framework or NuGet symbol that ships WITHOUT source - a method or type in a referenced "
+        + "DLL - to C#, the way Go-To-Definition does (ILSpy under the hood). This is the one thing reading the "
+        + "repo can't give you: the actual body of a library call ('what does this method really do?'). Returns "
+        + "real implementation bodies, not reference-assembly stubs. Address the symbol by symbolId (e.g. "
+        + "T:System.Linq.Enumerable, or the symbolId from vs_go_to_definition / vs_get_selection on a usage) or "
+        + "by file+line on a call site. By default returns just the requested MEMBER's source; pass "
+        + "wholeType:true for the entire containing type. Core BCL types (String, Int32, …) only decompile to "
+        + "a signature stub ({\"bodyAvailable\":false}) - the tool then auto-retries via SourceLink to fetch the "
+        + "REAL .NET source when online; pass preferSource:true to force that source-first. C#/VB only; capped + signaled.";
+
+    public JToken Schema
+    {
+        get
+        {
+            var s = SemanticSchemas.Target("decompile");
+            var props = (JObject)s["properties"]!;
+            props["wholeType"] = new JObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "Return the whole containing type instead of just the target member (default false).",
+            };
+            props["preferSource"] = new JObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "Fetch real source via SourceLink/embedded sources first (real .NET/library source, needs network), instead of decompiling. Default false - a stub auto-retries SourceLink anyway.",
+            };
+            return s;
+        }
+    }
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        var result = await RoslynReader.DecompileAsync(args ?? new JObject(), ct);
+        Log.Info($"vs_decompile -> scope={(string?)result["scope"] ?? "?"}, len={((string?)result["code"])?.Length ?? 0}, err={(string?)result["error"]}");
+        return result;
+    }
+}
+
 /// <summary>vs_search_symbols — name → candidate symbols with stable ids (the addressing primitive).</summary>
 internal sealed class VsSearchSymbolsTool : IIdeTool
 {

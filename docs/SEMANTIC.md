@@ -43,6 +43,32 @@ A representative run against it:
 
 ---
 
+## Two workflows it unlocks
+
+The tools compose. `vs_search_symbols` (or `vs_get_selection`) yields a `symbolId`; everything else consumes one. Two end-to-end examples of how that changes what the agent can do:
+
+### 1. "I'm about to change `Area()` — what's the blast radius?"
+
+Impact analysis that grep can only approximate:
+
+1. **`vs_search_symbols("Area")`** → the `IShape.Area` member, `symbolId: M:RefMaze.IShape.Area`.
+2. **`vs_find_implementations(M:RefMaze.IShape.Area)`** → every implementor, including `ShapeBase.Area` (abstract) and the **explicit** `Triangle.IShape.Area` — the one a `grep "\.Area"` can't tie back to the interface.
+3. **`vs_call_hierarchy(M:RefMaze.IShape.Area, callers)`** → the transitive caller tree: `SummarizeAll ← {Report, Describe} ← Main`, plus the surprise caller `ShapeBase.ToString`. That's the real set of places to re-test — derived semantically, not guessed from text.
+
+Where grep would over-count (every `.Area` in comments/strings/unrelated types) *and* under-count (missing the interface-dispatched and explicit-impl call sites), this is the exact, complete answer.
+
+### 2. "What does this library call actually do?"
+
+The capability that has no grep equivalent at all — reading a body that isn't in your repo:
+
+1. The agent sees `JsonConvert.SerializeObject(order)` in your code and wants to know what it does. It can't — that body lives in `Newtonsoft.Json.dll`.
+2. **`vs_go_to_definition`** on the call site → resolves the metadata symbol and hands back its `symbolId` (`M:Newtonsoft.Json.JsonConvert.SerializeObject(System.Object)`).
+3. **`vs_decompile`** that `symbolId` → the **real decompiled body**: `return SerializeObject(value, (Type?)null, (JsonSerializerSettings?)null);`.
+
+Point it at `String.Substring` instead and it decompiles to a stub, then auto-fetches the **real .NET runtime source** via SourceLink (see below). Either way the agent reads what the call does instead of guessing from the name.
+
+---
+
 ## How it reaches the model: a third MCP server
 
 The IDE-integration protocol (the WebSocket the CLI connects to) is **CLI-curated** — it surfaces only `getDiagnostics` (+ `executeCode`) and drives the rest itself, so a tool added there would never be called by the model. So, exactly like the debugger's pull channel, these tools live on a **user-registered MCP server** — the open plugin door the CLI surfaces in full.
@@ -84,8 +110,27 @@ The intended workflow is **search -> take the symbolId -> navigate**.
 | `vs_find_implementations` | Concrete implementations of an interface/interface-member, overrides of an abstract/virtual member, or derived classes of a base — exact via Roslyn. |
 | `vs_call_hierarchy` | `direction:"callers"` (default): who **transitively** calls a method, as a depth-limited, cycle-guarded tree with call sites — impact analysis. `direction:"callees"`: what the method directly calls (depth 1). |
 | `vs_type_hierarchy` | `direction:"derived"` (default): subtypes/implementors. `direction:"base"`: the base-class chain + implemented interfaces. |
+| `vs_decompile` | A framework/NuGet symbol **with no source** (a method/type in a referenced DLL) → its **decompiled C#** — the one thing reading the repo can't give you. See below. |
 
 Output is **bounded but signaled**: large results are capped (references 200, implementations/hierarchy 120, search 80, caller depth 3) and carry `{"truncated":true,"note":"..."}` so the model knows to narrow its query.
+
+---
+
+## Reading library bodies: `vs_decompile`
+
+This is the headline of the semantic surface and the **one thing reading the repo fundamentally cannot do**: show the *body* of a method that lives in a referenced DLL with no source — `JsonConvert.SerializeObject`, `Enumerable.Where`, `String.Substring`. The CLI can grep your code; it can never read what a library call actually does. `vs_decompile` can.
+
+It works the way **Go-To-Definition** does, by reusing **VS's own metadata-as-source service** (ILSpy under the hood) — no new dependency, just reflection against the already-loaded Roslyn. Address the symbol by `symbolId` (e.g. `T:System.Linq.Enumerable`, or the `symbolId` that `vs_go_to_definition` / `vs_get_selection` hand back for a metadata symbol) or by `file`+`line` on a call site. By default you get **just the requested member** (its declaration + doc comments); `wholeType:true` returns the whole containing type. Output is capped + signaled.
+
+Three source paths, each marked in the result (`source` = `decompiled` | `source`, plus `bodyAvailable`):
+
+| Target | Path | Result |
+|---|---|---|
+| `JsonConvert.SerializeObject` (NuGet) | ILSpy decompile of the `lib/` DLL | real body |
+| `Enumerable.Where` (framework) | ILSpy decompile of the runtime impl | real body (`WhereArrayIterator`, the fast paths) — **not** a ref-assembly stub |
+| `String.Substring` (core BCL) | stub → **SourceLink auto-retry** | the **real .NET runtime source** |
+
+**The BCL wrinkle, handled.** Core BCL types (`String`, `Int32`, …) are type-forwarded to `System.Private.CoreLib`, whose implementation the decompiler can't resolve from the project's references — so they decompile to a **signature-only stub**. The tool detects this (`bodyAvailable:false`) and **automatically retries via SourceLink** (`NavigateToSourceLinkAndEmbeddedSources`), which fetches the *real* source from `dotnet/runtime` at the exact commit. That retry is **bounded (20s)** so an offline/slow symbol server can't hang the call, and it's skipped when the body decompiled fine. Pass `preferSource:true` to go SourceLink-first (real source for everything that has it, at the cost of a network round-trip). Offline, a core-BCL symbol returns the stub with `bodyAvailable:false` + `sourceLinkTried:true` — honest, never a silent stub-masquerading-as-body.
 
 ---
 

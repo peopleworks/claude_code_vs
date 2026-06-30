@@ -1,6 +1,6 @@
 # Claude Code for Visual Studio
 
-> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
+> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
 
 ![Demo](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/demo.gif)
 
@@ -44,6 +44,14 @@ Full walkthrough, the complete tool list, and the limitations are in **[`docs/DE
 It's grown well past stepping since. Claude can now **attach to a running app** (debug a hosted web service or an already-running desktop app, not just F5), **break at the origin of an exception** instead of the catch that swallows it, and **pause a hung process to untangle a deadlock** — reading the lock-ownership chain across threads to pin the exact cycle. There's a worked deadlock walkthrough (LockJam) in **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
 And newest (1.8.1): **managed data breakpoints** — point Claude at a field and it breaks, or traces the *complete* change history (every old→new value, in order), the instant the value changes — conditionally (`> 700`), on every change, on several values at once. That's "break when this value changes," a watch Visual Studio's own UI can't set programmatically and that has no automation API — so it's genuinely new ground for catching the write that corrupts your state.
+
+## Read your code the way the compiler does (1.9.0)
+
+Most assistants navigate code by **grepping text** — which misses indirect references and over-counts on comments, strings, and same-named symbols. This release gives Claude Visual Studio's **resolved semantic model** (Roslyn): the same "Find All References / Go to Definition / Find Implementations / Call Hierarchy" the IDE uses, as ground truth instead of a guess. Ask "who calls this?" or "what implements `IFoo`?" and it resolves through interfaces, overrides, explicit interface implementations, and overloads — the cases text search gets wrong.
+
+The headline is **`vs_decompile`**: the one thing reading your repo *fundamentally can't* give you — the **body of a method inside a referenced DLL**. Point Claude at a framework or NuGet call (`JsonConvert.SerializeObject`, `Enumerable.Where`) and it returns the real decompiled C#, the way Go-to-Definition does. For core .NET types it even fetches the **actual `dotnet/runtime` source** via SourceLink. No more guessing what a library call does from its name.
+
+It needs **no debugger session** — it works any time a C#/VB solution is open. Full tool list, the addressing model, and worked workflows are in **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
 
 ## Requirements
 

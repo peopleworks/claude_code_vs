@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using ClaudeCodeVs.Protocol;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Host;       // HostWorkspaceServices / HostServices
 using Microsoft.CodeAnalysis.Operations;   // IInvocationOperation / IObjectCreationOperation (callees walk)
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.VisualStudio.ComponentModelHost;
@@ -439,6 +442,269 @@ internal static class RoslynReader
         return sym == null ? null : DescribeSymbol(sym, sym.GetDocumentationCommentId());
     }
 
+    // ---- Decompile (metadata -> C#) -- Path A: VS's IMetadataAsSourceFileService (the Go-To-Definition path) --
+
+    private const int MaxMemberChars = 8000;
+    private const int MaxTypeChars = 16000;
+    private const int SourceLinkTimeoutSec = 20;   // bound the SourceLink retry so an offline symbol server can't hang the call
+
+    /// <summary>
+    /// Decompile a metadata symbol (a framework/NuGet method or type that ships with no source) to C#, the way
+    /// Go-To-Definition does. Uses VS's own metadata-as-source service with NavigateToDecompiledSources=true
+    /// (ILSpy under the hood) - pure reflection against the already-loaded Roslyn Features (no new package),
+    /// and the host's DecompilationMetadataAsSourceFileProvider resolves ref-vs-impl assemblies for us (so a
+    /// framework method's REAL body comes back even though the compile-time reference is the bodyless ref
+    /// assembly). For a member, returns just that member's declaration (+ doc comments) via IdentifierLocation;
+    /// for a type, the whole type (capped). Each reflection hop is step-labelled so failures are diagnosable.
+    /// </summary>
+    public static async Task<JObject> DecompileAsync(JToken args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        var workspace = GetWorkspace();
+        var solution = workspace?.CurrentSolution;
+        await TaskScheduler.Default;   // hop OFF the UI thread; decompilation is heavy and VS runs it in the background too
+        if (workspace == null || solution == null || !solution.Projects.Any()) return Unavailable();
+
+        // Resolve symbol + the project it was viewed from (GetGeneratedFileAsync needs a source Project).
+        var (symbol, project, resolveErr) = await ResolveWithProjectAsync(solution, args, ct);
+        if (symbol == null) return resolveErr!;
+
+        bool preferSource = (bool?)args?["preferSource"] ?? false;
+        bool wholeType = (bool?)args?["wholeType"] ?? false;
+        bool isType = symbol is INamedTypeSymbol;
+
+        string step = "init";
+        try
+        {
+            step = "load Microsoft.CodeAnalysis.Features";
+            var featuresAsm = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Microsoft.CodeAnalysis.Features")
+                              ?? System.Reflection.Assembly.Load("Microsoft.CodeAnalysis.Features");
+
+            step = "get IMetadataAsSourceFileService / MetadataAsSourceOptions types";
+            var svcType = featuresAsm.GetType("Microsoft.CodeAnalysis.MetadataAsSource.IMetadataAsSourceFileService", throwOnError: true)!;
+            var optType = featuresAsm.GetType("Microsoft.CodeAnalysis.MetadataAsSource.MetadataAsSourceOptions", throwOnError: true)!;
+
+            // It's a MEF export (not an IWorkspaceService) and IMefHostExportProvider is internal too,
+            // so do the whole hop via reflection: HostServices implements it at runtime.
+            step = "get IMefHostExportProvider type + HostServices";
+            var workspacesAsm = typeof(Solution).Assembly;   // Microsoft.CodeAnalysis.Workspaces
+            var mefIfaceType = workspacesAsm.GetType("Microsoft.CodeAnalysis.Host.Mef.IMefHostExportProvider", throwOnError: true)!;
+            object hostServices = workspace.Services.HostServices;
+            if (!mefIfaceType.IsInstanceOfType(hostServices))
+                return Err("Workspace HostServices does not implement IMefHostExportProvider.");
+
+            step = "GetExports<IMetadataAsSourceFileService>()";
+            var getExports = mefIfaceType.GetMethods()
+                .First(m => m.Name == "GetExports" && m.IsGenericMethodDefinition
+                            && m.GetGenericArguments().Length == 1 && m.GetParameters().Length == 0)
+                .MakeGenericMethod(svcType);
+            var lazies = (System.Collections.IEnumerable)getExports.Invoke(hostServices, null)!;
+            object? svc = null;
+            foreach (var lazy in lazies) { svc = lazy.GetType().GetProperty("Value")!.GetValue(lazy); break; }
+            if (svc == null) return Err("No IMetadataAsSourceFileService MEF export found in the host.");
+
+            var getFile = svcType.GetMethod("GetGeneratedFileAsync")!;
+
+            // Shape one generated file (decompiled OR SourceLink/embedded) into the result + a body verdict.
+            (JObject json, bool? body) Shape(string raw, Location? idLocation, bool sourceLinkAttempt)
+            {
+                var fullCode = StripDecompilationLog(raw ?? "");   // drop ILSpy's "#if false // Decompilation log" trailer
+                bool decompiled = fullCode.Contains("// Decompiled with ICSharpCode");
+                string code; string scope; bool truncated;
+
+                if (fullCode.Length == 0) { code = ""; scope = "none"; truncated = false; }
+                else if (!wholeType && !isType && idLocation != null && idLocation.SourceSpan.Length > 0
+                         && TryExtractMember(fullCode, idLocation.SourceSpan, ct, out var member))
+                {
+                    truncated = member.Length > MaxMemberChars;
+                    code = truncated ? member.Substring(0, MaxMemberChars) + "\n// ...truncated; pass wholeType:true for the full type" : member;
+                    scope = "member";
+                }
+                else
+                {
+                    truncated = fullCode.Length > MaxTypeChars;
+                    code = truncated ? fullCode.Substring(0, MaxTypeChars) + "\n// ...truncated (large type); decompile a specific member instead" : fullCode;
+                    scope = isType ? "type" : "type (member extraction unavailable)";
+                }
+
+                // Real body, or a ref-assembly stub? Core BCL types forwarded to System.Private.CoreLib come
+                // back signature-only from decompilation; the SourceLink retry can upgrade them to real source.
+                bool? body = fullCode.Length == 0 ? false : AssessBody(code, symbol, scope);
+                string source = fullCode.Length == 0 ? "none" : (decompiled ? "decompiled" : "source");
+
+                var j = new JObject
+                {
+                    ["available"] = true,
+                    ["symbol"] = DescribeSymbol(symbol, symbol.GetDocumentationCommentId()),
+                    ["fromMetadata"] = symbol.Locations.Any(l => l.IsInMetadata),
+                    ["assembly"] = symbol.ContainingAssembly?.Identity?.ToString(),
+                    ["scope"] = scope,
+                    ["source"] = source,   // "decompiled" | "source" (SourceLink/embedded) | "none"
+                    ["code"] = code,
+                };
+                if (body.HasValue) j["bodyAvailable"] = body.Value;
+                if (truncated) j["truncated"] = true;
+                j["note"] = body == false
+                    ? (sourceLinkAttempt
+                        ? "Only the reference-assembly signature was recoverable; neither decompilation nor SourceLink produced a body (offline, or the implementation isn't available)."
+                        : "Only the reference-assembly signature was recoverable (common for core BCL types forwarded to System.Private.CoreLib).")
+                    : (source == "source"
+                        ? "Real source via SourceLink / embedded sources."
+                        : "Bodies decompiled (ILSpy) from the implementation; for framework types the assembly identity shown is the compile-time reference assembly.");
+                return (j, body);
+            }
+
+            // One GetGeneratedFileAsync attempt. NavigateToDecompiledSources always on; +SourceLink when asked.
+            async Task<(JObject json, bool? body)> GenerateAsync(bool sourceLink, CancellationToken token)
+            {
+                var options = Activator.CreateInstance(optType)!;
+                optType.GetProperty("NavigateToDecompiledSources")!.SetValue(options, true);
+                if (sourceLink)
+                {
+                    optType.GetProperty("NavigateToSourceLinkAndEmbeddedSources")?.SetValue(options, true);
+                    optType.GetProperty("AlwaysUseDefaultSymbolServers")?.SetValue(options, true);
+                }
+                var t = (Task)getFile.Invoke(svc, new object?[] { workspace, project, symbol, false, options, token })!;
+                await t.ConfigureAwait(false);
+                var file = t.GetType().GetProperty("Result")!.GetValue(t)!;
+                var filePath = (string)file.GetType().GetProperty("FilePath")!.GetValue(file)!;
+                var idLocation = file.GetType().GetProperty("IdentifierLocation")!.GetValue(file) as Location;
+                var raw = File.Exists(filePath) ? File.ReadAllText(filePath) : "";
+                return Shape(raw, idLocation, sourceLink);
+            }
+
+            // Attempt 1: decompile (or SourceLink-first if the caller forced it via preferSource).
+            step = "GetGeneratedFileAsync";
+            var (json, body) = await GenerateAsync(preferSource, ct);
+
+            // Auto-retry on a ref-assembly stub: try SourceLink (real BCL source from symbol servers), bounded
+            // so a slow/offline server can't hang the call. Skipped when the caller already forced source.
+            if (!preferSource && body == false)
+            {
+                step = "SourceLink retry";
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(SourceLinkTimeoutSec));
+                try
+                {
+                    var (json2, body2) = await GenerateAsync(true, timeout.Token);
+                    if (body2 == true) return json2;             // upgraded to a real body / source
+                    json["sourceLinkTried"] = true;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    json["sourceLinkTried"] = true;
+                    json["note"] = (string?)json["note"] + " (SourceLink retry timed out.)";
+                }
+                catch { json["sourceLinkTried"] = true; }
+            }
+            return json;
+        }
+        catch (Exception e)
+        {
+            return Err($"decompile failed at step [{step}]: {e.GetType().Name}: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Extract just the member declaration (with leading doc comments / attributes) that contains
+    /// <paramref name="span"/> from decompiled C# text. Uses the already-loaded Microsoft.CodeAnalysis.CSharp
+    /// via reflection only to (a) parse and (b) type-test MemberDeclarationSyntax; the tree/node walk is all
+    /// base Roslyn (Common) API. Dependency-free; returns false (caller falls back to the whole type) on any miss.
+    /// </summary>
+    private static bool TryExtractMember(string code, TextSpan span, CancellationToken ct, out string member)
+    {
+        member = "";
+        try
+        {
+            var csharpAsm = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "Microsoft.CodeAnalysis.CSharp");
+            var treeType = csharpAsm?.GetType("Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree");
+            var memberType = csharpAsm?.GetType("Microsoft.CodeAnalysis.CSharp.Syntax.MemberDeclarationSyntax");
+            if (treeType == null || memberType == null) return false;
+
+            var parse = treeType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                .First(m => m.Name == "ParseText" && m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(string));
+            var ps = parse.GetParameters();
+            var argv = new object?[ps.Length];
+            argv[0] = code;
+            for (int i = 1; i < ps.Length; i++)
+                argv[i] = ps[i].ParameterType == typeof(CancellationToken) ? ct
+                        : ps[i].HasDefaultValue ? ps[i].DefaultValue
+                        : ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null;
+
+            var tree = (SyntaxTree)parse.Invoke(null, argv)!;          // base Common type
+            var root = tree.GetRoot(ct);
+            if (span.End > root.FullSpan.End) return false;
+            SyntaxNode? node = root.FindNode(span);
+            while (node != null && !memberType.IsInstanceOfType(node)) node = node.Parent;
+            if (node == null) return false;
+            member = node.ToFullString().Trim();                       // includes leading doc comments / attributes
+            return member.Length > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Strip ILSpy's trailing "#if false // Decompilation log … #endif" noise block.</summary>
+    private static string StripDecompilationLog(string code)
+    {
+        var m = Regex.Match(code, @"\r?\n#if false\s*//\s*Decompilation log[\s\S]*$");
+        return m.Success ? code.Substring(0, m.Index).TrimEnd() + "\n" : code;
+    }
+
+    /// <summary>
+    /// Did we recover a real implementation body, or only a ref-assembly stub? Two stub forms: signature-only
+    /// (declaration ends without a block/expression body) and ILSpy's "{ throw null; }". Returns null when a
+    /// body verdict isn't meaningful (e.g. a field, or a non-method member).
+    /// </summary>
+    private static bool? AssessBody(string code, ISymbol symbol, string scope)
+    {
+        bool throwNull = Regex.IsMatch(code, @"\{\s*throw null;\s*\}");
+        if (scope == "member")
+        {
+            if (symbol is not IMethodSymbol m || m.IsAbstract) return null;   // only assess methods
+            bool hasBody = code.Contains("=>") || code.Contains("{");
+            return hasBody && !throwNull;
+        }
+        // type scope: a signatures-only type has no "method() {" bodies at all.
+        if (throwNull) return false;
+        return Regex.IsMatch(code, @"\)\s*\r?\n?\s*\{") || code.Contains("=>");
+    }
+
+    /// <summary>Like ResolveSymbolAsync but also returns the project the symbol was resolved from.</summary>
+    private static async Task<(ISymbol? symbol, Project? project, JObject? error)> ResolveWithProjectAsync(Solution solution, JToken args, CancellationToken ct)
+    {
+        var symbolId = (string?)args?["symbolId"];
+        if (!string.IsNullOrWhiteSpace(symbolId))
+        {
+            foreach (var project in solution.Projects)
+            {
+                ct.ThrowIfCancellationRequested();
+                var comp = await project.GetCompilationAsync(ct).ConfigureAwait(false);
+                if (comp == null) continue;
+                var sym = DocumentationCommentId.GetFirstSymbolForDeclarationId(symbolId, comp);
+                if (sym != null) return (sym, project, null);
+            }
+            return (null, null, Err($"No symbol found for symbolId '{symbolId}'."));
+        }
+
+        var file = (string?)args?["file"];
+        var line = (int?)args?["line"];
+        if (!string.IsNullOrWhiteSpace(file) && line.HasValue)
+        {
+            var doc = FindDocument(solution, file!);
+            if (doc == null) return (null, null, Err($"File not in the solution: {file}"));
+            var text = await doc.GetTextAsync(ct).ConfigureAwait(false);
+            if (line.Value < 1 || line.Value > text.Lines.Count) return (null, null, Err($"line {line} out of range."));
+            int col = (int?)args?["column"] ?? 1;
+            var ln = text.Lines[line.Value - 1];
+            int pos = Math.Min(ln.Start + Math.Max(0, col - 1), Math.Max(ln.Start, ln.EndIncludingLineBreak - 1));
+            var sym = await SymbolFinder.FindSymbolAtPositionAsync(doc, pos, ct).ConfigureAwait(false);
+            if (sym == null) return (null, null, Err($"No symbol at {file}:{line}."));
+            return (sym, doc.Project, null);
+        }
+
+        return (null, null, Err("Provide 'symbolId' or 'file'+'line'."));
+    }
+
     // ---- Symbol resolution (symbolId | file:line) ------------------------------------------------------
 
     /// <summary>
@@ -485,14 +751,26 @@ internal static class RoslynReader
     /// <summary>Find a document by path — exact first, then a case-insensitive fallback (Windows paths).</summary>
     private static Document? FindDocument(Solution solution, string filePath)
     {
+        // Exact match first (fast path). Then retry normalized: agents naturally pass forward-slash paths
+        // (C:/…/X.cs) but Roslyn stores backslash paths, so a literal compare misses. Normalize separators
+        // and compare case-insensitively (Windows paths) so either slash style resolves.
         var ids = solution.GetDocumentIdsWithFilePath(filePath);
         if (!ids.IsEmpty) return solution.GetDocument(ids[0]);
+
+        var norm = NormalizePath(filePath);
+        ids = solution.GetDocumentIdsWithFilePath(norm);   // backslash form may hit the index directly
+        if (!ids.IsEmpty) return solution.GetDocument(ids[0]);
+
         foreach (var project in solution.Projects)
             foreach (var doc in project.Documents)
-                if (string.Equals(doc.FilePath, filePath, StringComparison.OrdinalIgnoreCase))
+                if (doc.FilePath != null && string.Equals(NormalizePath(doc.FilePath), norm, StringComparison.OrdinalIgnoreCase))
                     return doc;
         return null;
     }
+
+    /// <summary>Canonicalize a file path for comparison: forward slashes -> backslashes, no trailing slash.</summary>
+    private static string NormalizePath(string path) =>
+        string.IsNullOrEmpty(path) ? "" : path.Replace('/', '\\').TrimEnd('\\');
 
     // ---- Shaping helpers -------------------------------------------------------------------------------
 

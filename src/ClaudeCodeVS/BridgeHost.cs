@@ -307,6 +307,7 @@ internal sealed class BridgeHost : IDisposable
     private static IEnumerable<IIdeTool> BuildSemanticTools()
     {
         yield return new VsGetSelectionTool();         // editor selection/caret -> text + symbolId at it
+        yield return new VsDecompileTool();            // framework/NuGet metadata symbol -> decompiled C#
         yield return new VsSearchSymbolsTool();        // name -> symbolId (addressing primitive)
         yield return new VsFindReferencesTool();       // semantic find-all-references
         yield return new VsGoToDefinitionTool();       // the one definition among overloads
