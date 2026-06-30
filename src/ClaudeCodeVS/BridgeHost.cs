@@ -103,6 +103,10 @@ internal sealed class BridgeHost : IDisposable
         // background tailer of the change stream; needs the driver for stop-on-change (EnvDTE Break).
         _dataBpBridge = new Debugging.DataBreakpointBridge(_driver);
         _server.DebugMcp = new McpServer(new ToolRegistry(BuildDebugTools(_driver, _dataBpBridge)));
+        // vs-semantic PULL channel (POST /mcp-semantic): Roslyn code-navigation tools. Same shim/dispatch,
+        // its own registry + route - the static-analysis sibling of the runtime debug tools above. Reads the
+        // live VisualStudioWorkspace; needs no debug session (useful any time a C#/VB solution is loaded).
+        _server.SemanticMcp = new McpServer(new ToolRegistry(BuildSemanticTools()));
 
         // Run the accept loop in the background. If it ever faults (not a normal shutdown), delete the
         // lockfile so we don't keep advertising a dead bridge that blocks reconnection (issue #5043).
@@ -293,6 +297,23 @@ internal sealed class BridgeHost : IDisposable
         yield return new VsSetDataBreakpointTool(dataBp);
         yield return new VsGetDataChangesTool(dataBp);
         yield return new VsRemoveDataBreakpointTool(dataBp);
+    }
+
+    /// <summary>
+    /// The vs-semantic tool set - Roslyn code navigation over the live VisualStudioWorkspace. All read-only
+    /// and ungated (no execution, no mutation), managed (C#/VB) only. vs_search_symbols is the addressing
+    /// primitive whose symbolId the rest consume. See RoslynReader for the workspace/threading model.
+    /// </summary>
+    private static IEnumerable<IIdeTool> BuildSemanticTools()
+    {
+        yield return new VsGetSelectionTool();         // editor selection/caret -> text + symbolId at it
+        yield return new VsDecompileTool();            // framework/NuGet metadata symbol -> decompiled C#
+        yield return new VsSearchSymbolsTool();        // name -> symbolId (addressing primitive)
+        yield return new VsFindReferencesTool();       // semantic find-all-references
+        yield return new VsGoToDefinitionTool();       // the one definition among overloads
+        yield return new VsFindImplementationsTool();  // interface/abstract -> concrete + overrides
+        yield return new VsCallHierarchyTool();        // transitive callers / direct callees
+        yield return new VsTypeHierarchyTool();        // base chain+interfaces / derived types
     }
 
     /// <summary>Best-effort workspace root for the lockfile: the open solution's directory, else none.</summary>

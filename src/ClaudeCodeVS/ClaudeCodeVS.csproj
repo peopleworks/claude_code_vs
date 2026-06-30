@@ -108,6 +108,13 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
+    <!-- Roslyn semantic model (vs-semantic server). Compile-time ONLY: ExcludeAssets="runtime" so we
+         bind to devenv's own Microsoft.CodeAnalysis.*/LanguageServices at runtime and never ship a
+         second copy (a version skew here = the MissingMethodException class that exiled ClrMD). VS
+         hosts Roslyn in-proc and VisualStudioWorkspace is the supported extension entry point, so
+         unlike ClrMD this works in-proc. Bringing LanguageServices transitively pulls the
+         Microsoft.CodeAnalysis.Workspaces compile refs (SymbolFinder, Solution, DocumentationCommentId). -->
+    <PackageReference Include="Microsoft.VisualStudio.LanguageServices" Version="4.14.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,6 +1,6 @@
 # Claude Code for Visual Studio
 
-> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
+> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
 
 ![Demo](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/demo.gif)
 
@@ -18,6 +18,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 - **Reject with feedback** - reject an edit and tell Claude what to change; it reconsiders with your note.
 - **Run wild (auto-accept)** - a panel toggle to apply edits without opening the diff, for when you want to let it cook. Resets each session.
 - **Diagnostics sharing** - Claude reads Visual Studio's compiler errors/warnings (C# and C++) and fixes them.
+- **Semantic code navigation** - Claude asks Visual Studio's compiler (Roslyn) for the *resolved* meaning of your C# code instead of grepping text: **find-all-references**, **go-to-definition**, **find-implementations**, and **call/type hierarchies**. These are the ground-truth answers text search gets wrong - indirect and interface-dispatched references, the *right* overload, explicit interface implementations, transitive callers for impact analysis. No debug session needed; it works whenever a C#/VB solution is loaded. Full reference: **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
 - **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can *drive* the debugger - continue, step, set breakpoints, **break at the throw site of an exception**, **set a data breakpoint that breaks (or traces the full change history) the moment a value changes**, **attach to a running app** (a hosted web service or desktop app, not just F5), and **pause a hung process to untangle a deadlock** (following the lock-ownership chain across threads to the exact cycle) - to corner a bug instead of guessing from source. Full reference: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 - **Selection context** - Claude automatically knows the file and lines you're looking at.
 - **Live panel** - a dockable *Claude Code* panel: connection status, edit decisions, and **token usage + estimated cost** (latest call vs cumulative session).
@@ -43,6 +44,14 @@ Full walkthrough, the complete tool list, and the limitations are in **[`docs/DE
 It's grown well past stepping since. Claude can now **attach to a running app** (debug a hosted web service or an already-running desktop app, not just F5), **break at the origin of an exception** instead of the catch that swallows it, and **pause a hung process to untangle a deadlock** — reading the lock-ownership chain across threads to pin the exact cycle. There's a worked deadlock walkthrough (LockJam) in **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
 And newest (1.8.1): **managed data breakpoints** — point Claude at a field and it breaks, or traces the *complete* change history (every old→new value, in order), the instant the value changes — conditionally (`> 700`), on every change, on several values at once. That's "break when this value changes," a watch Visual Studio's own UI can't set programmatically and that has no automation API — so it's genuinely new ground for catching the write that corrupts your state.
+
+## Read your code the way the compiler does (1.9.0)
+
+Most assistants navigate code by **grepping text** — which misses indirect references and over-counts on comments, strings, and same-named symbols. This release gives Claude Visual Studio's **resolved semantic model** (Roslyn): the same "Find All References / Go to Definition / Find Implementations / Call Hierarchy" the IDE uses, as ground truth instead of a guess. Ask "who calls this?" or "what implements `IFoo`?" and it resolves through interfaces, overrides, explicit interface implementations, and overloads — the cases text search gets wrong.
+
+The headline is **`vs_decompile`**: the one thing reading your repo *fundamentally can't* give you — the **body of a method inside a referenced DLL**. Point Claude at a framework or NuGet call (`JsonConvert.SerializeObject`, `Enumerable.Where`) and it returns the real decompiled C#, the way Go-to-Definition does. For core .NET types it even fetches the **actual `dotnet/runtime` source** via SourceLink. No more guessing what a library call does from its name.
+
+It needs **no debugger session** — it works any time a C#/VB solution is open. Full tool list, the addressing model, and worked workflows are in **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
 
 ## Requirements
 
@@ -78,6 +87,8 @@ To make the **VS diff the single approval gate**, the extension installs a small
 
 For **debugger access**, it adds a `UserPromptSubmit` hook (injects live break state when you're paused) and a second MCP server, `vs-debug`, reached through a tiny stdio shim auto-registered in your workspace `.mcp.json`. Reading runtime state is always allowed; *driving* execution is opt-in behind a panel toggle. Details: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
+For **semantic navigation**, it adds a third MCP server, `vs-semantic` (the same shim, a different route), exposing Roslyn code-navigation tools backed by the live `VisualStudioWorkspace`. All read-only, no debug session required. Details: **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
+
 ## Privacy & security
 
 - The bridge binds to **127.0.0.1 only** and validates an **auth token** (from the lockfile) on every connection. The token is never logged.
@@ -86,7 +97,7 @@ For **debugger access**, it adds a `UserPromptSubmit` hook (injects live break s
   - `vs-permission-hook.ps1` - routes Edit/Write/MultiEdit edits through the VS diff.
   - `vs-usage-hook.ps1` - reports the transcript path so the panel can show token stats.
   - `vs-debug-context-hook.ps1` - injects live break state into your prompt while you're paused (a `UserPromptSubmit` hook).
-  - `vs-mcp-shim.ps1` - a stdio bridge for the `vs-debug` MCP server, which it registers in your workspace `.mcp.json`.
+  - `vs-mcp-shim.ps1` - a stdio bridge for the `vs-debug` and `vs-semantic` MCP servers, which it registers in your workspace `.mcp.json`.
 - **Token cost is an estimate** (hardcoded per-tier prices), shown only when you click *Show est. cost*.
 
 ## Limitations & known issues
@@ -94,6 +105,7 @@ For **debugger access**, it adds a `UserPromptSubmit` hook (injects live break s
 - **Visual Studio 2026 only** for now (a VS 2022 backfill is planned if there's demand).
 - The IDE-integration protocol is **undocumented and version-fragile** - a `claude` update could change it. Known-good: 2.1.191.
 - **Diagnostics need a loaded project** (the Error List / Roslyn won't analyze loose files).
+- **Semantic navigation is C#/VB and needs a loaded project** - it reads the Roslyn workspace, so it sees the solution open in VS (not the CLI's working directory if they differ), and doesn't cover C++ navigation or loose files.
 - **Debugger features target managed (.NET) code.** Reading runtime state is always on; driving execution is opt-in. Native/C++ runtime inspection isn't covered.
 - Token stats refresh **on edits** (the reliable hook trigger), so a chat-only turn may not update them immediately.
 - Cost figures are **estimates**, not billing.

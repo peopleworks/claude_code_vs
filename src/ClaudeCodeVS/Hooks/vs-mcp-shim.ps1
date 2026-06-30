@@ -15,6 +15,13 @@
 # Anything else on stdout corrupts the MCP stream, so diagnostics must go to stderr only. Fail-soft:
 # if the bridge is unreachable we answer requests with a JSON-RPC error (never hang the CLI) and drop
 # notifications.
+#
+# -Route selects which bridge MCP endpoint this shim proxies to, so ONE script backs both MCP servers:
+#   /mcp           -> vs-debug    (runtime/debugger tools)
+#   /mcp-semantic  -> vs-semantic (Roslyn code-navigation tools)
+# The .mcp.json entry for each server passes the matching -Route; default keeps the original vs-debug behavior.
+
+param([string]$Route = '/mcp')
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # suppress Invoke-WebRequest's progress bar (it can hit stderr)
@@ -57,7 +64,7 @@ function Resolve-Bridge {
 # failure so the caller can re-discover and retry.
 function Send-ToBridge([string]$json) {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:Port)/mcp" -Method Post `
+    $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:Port)$Route" -Method Post `
         -ContentType 'application/json; charset=utf-8' `
         -Headers @{ 'x-claude-code-ide-authorization' = $script:Token } `
         -Body $bytes -TimeoutSec 60 -UseBasicParsing
