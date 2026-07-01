@@ -25,3 +25,5 @@ publish/
 
 # Specific files
 /docs/debugger.gif
+# Test run artifacts
+**/TestResults/
