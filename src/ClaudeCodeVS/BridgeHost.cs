@@ -258,6 +258,13 @@ internal sealed class BridgeHost : IDisposable
     /// </summary>
     private static IEnumerable<IIdeTool> BuildDebugTools(Debugging.DebuggerDriver driver, Debugging.DataBreakpointBridge dataBp)
     {
+        // SPIKE (spike_test_runner): acquisition probe for the planned vs-test server. Read-only; delete before ship.
+        yield return new VsTestProbeTool();
+        // SPIKE (spike_test_runner): the fix-verify loop tools on VS's Test Explorer engine.
+        var testRunner = new Testing.TestRunner();
+        yield return new VsListTestsTool(testRunner);   // discover
+        yield return new VsRunTestTool(testRunner);     // run one/all + coverage/profile
+        yield return new VsDebugTestTool(testRunner);   // launch one under the debugger
         // Phase 2 - read/pull (ungated).
         yield return new VsDebugStateTool();
         yield return new VsListBreakpointsTool();

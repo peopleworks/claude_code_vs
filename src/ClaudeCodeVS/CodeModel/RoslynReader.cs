@@ -81,6 +81,77 @@ internal static class RoslynReader
 
     private static JObject Err(string message) => new JObject { ["available"] = true, ["error"] = message };
 
+    // ---- Test discovery (for the vs-test tools) --------------------------------------------------------
+
+    private static readonly HashSet<string> TestAttributeNames = new(StringComparer.Ordinal)
+    {
+        "FactAttribute", "TheoryAttribute",                              // xUnit
+        "TestAttribute", "TestCaseAttribute", "TestCaseSourceAttribute", // NUnit
+        "TestMethodAttribute", "DataTestMethodAttribute",                // MSTest
+    };
+
+    /// <summary>
+    /// Discover unit tests WITHOUT Test Explorer's internal result callback: scan the Roslyn model for
+    /// methods carrying a known test attribute ([Fact]/[Theory]/[Test]/[TestMethod]/[TestCase]/…) and return
+    /// their real fully-qualified names (Namespace.Type.Method) — exactly what the run/debug tools address
+    /// by. Optional <paramref name="filter"/> = an FQN substring. Reuses the vs-semantic workspace/threading.
+    /// </summary>
+    public static async Task<JObject> FindTestMethodsAsync(string? filter, CancellationToken ct)
+    {
+        var solution = await GetSolutionOffThreadAsync(ct);
+        if (solution == null || !solution.Projects.Any()) return Unavailable();
+
+        var tests = new JArray();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var project in solution.Projects)
+        {
+            var comp = await project.GetCompilationAsync(ct).ConfigureAwait(false);
+            if (comp == null) continue;
+            foreach (var type in AllTypes(comp.GlobalNamespace))
+            {
+                foreach (var m in type.GetMembers().OfType<IMethodSymbol>())
+                {
+                    if (!m.GetAttributes().Any(a => a.AttributeClass != null && TestAttributeNames.Contains(a.AttributeClass.Name)))
+                        continue;
+                    string fqn = m.ContainingType.ToDisplayString() + "." + m.Name;
+                    if (!seen.Add(fqn)) continue;
+                    if (!string.IsNullOrEmpty(filter) && fqn.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    tests.Add(new JObject
+                    {
+                        ["fullyQualifiedName"] = fqn,
+                        ["displayName"] = m.Name,
+                        ["className"] = m.ContainingType.ToDisplayString(),
+                        ["project"] = project.Name,
+                        ["source"] = m.Locations.FirstOrDefault(l => l.IsInSource)?.GetLineSpan().Path,
+                    });
+                    if (tests.Count >= 500) return new JObject { ["available"] = true, ["truncated"] = true, ["count"] = tests.Count, ["tests"] = tests };
+                }
+            }
+        }
+        return new JObject { ["available"] = true, ["count"] = tests.Count, ["tests"] = tests };
+    }
+
+    /// <summary>All named types in a namespace, including nested, recursively.</summary>
+    private static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)
+    {
+        foreach (var t in ns.GetTypeMembers())
+        {
+            yield return t;
+            foreach (var nested in NestedTypes(t)) yield return nested;
+        }
+        foreach (var child in ns.GetNamespaceMembers())
+            foreach (var t in AllTypes(child)) yield return t;
+    }
+
+    private static IEnumerable<INamedTypeSymbol> NestedTypes(INamedTypeSymbol type)
+    {
+        foreach (var n in type.GetTypeMembers())
+        {
+            yield return n;
+            foreach (var deeper in NestedTypes(n)) yield return deeper;
+        }
+    }
+
     // ---- Search (the addressing primitive) -------------------------------------------------------------
 
     /// <summary>
