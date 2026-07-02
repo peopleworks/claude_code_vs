@@ -265,6 +265,10 @@ internal sealed class BridgeHost : IDisposable
         yield return new VsListTestsTool(testRunner);   // discover
         yield return new VsRunTestTool(testRunner);     // run one/all + coverage/profile
         yield return new VsDebugTestTool(testRunner);   // launch one under the debugger
+        yield return new VsHuntFlakyTool(testRunner);   // loop-until-fail (force-repro transient bugs), async start+poll
+        yield return new VsHuntResultTool(testRunner);  // poll a background hunt
+        yield return new VsHuntCancelTool(testRunner);  // cancel a background hunt
+        yield return new VsCatchFlakyTool(testRunner, driver); // catch red-handed: loop under the debugger until it breaks
         // Phase 2 - read/pull (ungated).
         yield return new VsDebugStateTool();
         yield return new VsListBreakpointsTool();

@@ -453,6 +453,28 @@ internal sealed class DebuggerDriver : IVsDebuggerEvents, IDisposable
         catch (Exception e) { return Err($"set break-on-thrown failed: {e.Message}"); }
     }
 
+    /// <summary>
+    /// Start a debug run (via <paramref name="launch"/>, which must KICK OFF the run and return its Task
+    /// WITHOUT awaiting completion) and await the next Break or program-end - reusing the same OnModeChange
+    /// engine as the drive tools. Returns the break snapshot (<c>mode=="break"</c>) if the debuggee halts (e.g.
+    /// break-on-thrown fires at a fault), or <c>{mode:"design"}</c> if the run finished without breaking. Used
+    /// by the flaky-catcher to loop test debug-runs until one breaks red-handed.
+    /// </summary>
+    public async Task<JObject> LaunchAndAwaitBreakAsync(Func<Task> launch, int timeoutMs, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        if (!BeginCommand()) return Err("another debugger command is in progress");
+        try
+        {
+            EnsureAdvised();
+            var waiter = ArmWaiter();          // park BEFORE launching so we can't miss an instant break
+            try { _ = launch(); }
+            catch (Exception e) { ClearWaiter(waiter); return Err("launch failed: " + e.Message); }
+            return await AwaitBreakAsync(waiter, timeoutMs, ct);
+        }
+        finally { EndCommand(); }
+    }
+
     // ===== the await-break engine =====
 
     /// <summary>

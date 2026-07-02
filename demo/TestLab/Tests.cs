@@ -28,6 +28,24 @@ public class ScoreTests
     }
 }
 
+/// <summary>Intermittent failures — the target for vs_hunt_flaky (the flaky/transient hunter).</summary>
+public class FlakyTests
+{
+    [Fact] // FLAKY: fails ~1 in 3 runs via an assertion — a transient bug to force-reproduce.
+    public void Flaky_IntermittentAssert()
+    {
+        int roll = Random.Shared.Next(3);
+        Assert.True(roll != 0, $"Flaky failure: roll landed on {roll} (fails ~1 in 3 runs)");
+    }
+
+    [Fact] // FLAKY: throws intermittently — the red-handed-under-debugger target.
+    public void Flaky_IntermittentThrow()
+    {
+        if (Random.Shared.Next(3) == 0)
+            throw new InvalidOperationException("Flaky throw: hit the 1-in-3 path.");
+    }
+}
+
 /// <summary>Buggy code under test.</summary>
 internal static class Scorer
 {
