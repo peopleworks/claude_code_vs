@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ClaudeCodeVs.CodeModel;
@@ -254,30 +256,33 @@ internal sealed class VsCatchFlakyTool : IIdeTool
 
         string test = (string?)args["test"] ?? "";
         int maxRuns = (int?)args["maxRuns"] ?? 15;
-        string? exception = (string?)args["exception"];
+        string? given = (string?)args["exception"];
 
-        // 1) Determine the exception type to break on (a quick pre-hunt learns it if not supplied).
+        // 1) Determine the exception type(s) to break on. A quick pre-hunt learns a THROWN type; for a bare
+        //    assertion (no type in the message) we arm the framework assertion base types so it's still one call.
         JObject? preHunt = null;
-        if (string.IsNullOrEmpty(exception))
+        List<string> exceptions;
+        if (!string.IsNullOrEmpty(given))
+        {
+            exceptions = new List<string> { given! };
+            await _runner.EnsureBuiltAsync(ct);
+        }
+        else
         {
             preHunt = await _runner.QuickReproAsync(test, 8, ct);
             if ((bool?)preHunt["reproduced"] != true)
                 return Ret(test, new JObject { ["caught"] = false, ["preHunt"] = preHunt, ["note"] = "Couldn't reproduce in a quick pre-hunt to learn the exception type. Confirm flakiness with vs_hunt_flaky, or pass `exception` explicitly." });
-            exception = (string?)preHunt["exceptionType"];
-            if (string.IsNullOrEmpty(exception))
-                return Ret(test, new JObject { ["caught"] = false, ["reproduced"] = true, ["preHunt"] = preHunt, ["note"] = "Reproduced, but the failure is an assertion with no exception type in its message. Re-run with `exception` set (e.g. Xunit.Sdk.XunitException / NUnit.Framework.AssertionException / Microsoft.VisualStudio.TestTools.UnitTesting.AssertFailedException)." });
-        }
-        else
-        {
-            await _runner.EnsureBuiltAsync(ct);
+            var learned = (string?)preHunt["exceptionType"];
+            exceptions = !string.IsNullOrEmpty(learned) ? new List<string> { learned! } : new List<string>(AssertBaseTypes);
         }
 
-        // 2) Arm break-on-thrown + acquire the engine.
-        var arm = await _driver.SetBreakOnThrownAsync(exception!, true, ct);
-        if ((bool?)arm["ok"] != true)
-            return Ret(test, new JObject { ["caught"] = false, ["exception"] = exception, ["armError"] = arm, ["note"] = "Couldn't arm break-on-thrown (needs a loaded solution)." });
+        // 2) Arm break-on-thrown for each candidate (a name not present in the debuggee just never fires) + acquire.
+        foreach (var ex in exceptions) await _driver.SetBreakOnThrownAsync(ex, true, ct);
         if (!await _runner.EnsureAcquiredAsync(ct))
+        {
+            foreach (var ex in exceptions) await _driver.SetBreakOnThrownAsync(ex, false, ct);
             return Ret(test, new JObject { ["caught"] = false, ["error"] = "couldn't acquire the test engine" });
+        }
 
         // 3) Loop debug runs until one breaks at the fault (bounded by maxRuns + a ~40s budget).
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -288,34 +293,79 @@ internal sealed class VsCatchFlakyTool : IIdeTool
             run++;
             var snap = await _driver.LaunchAndAwaitBreakAsync(() => _runner.StartDebugRun(test, ct), 60000, ct);
             if ((string?)snap["mode"] == "break")
+            {
+                string? caught = (string?)(snap["locals"] as JArray)?.FirstOrDefault(l => (string?)l["name"] == "$exception")?["type"];
                 return Ret(test, new JObject
                 {
                     ["caught"] = true,
                     ["onRun"] = run,
-                    ["exception"] = exception,
+                    ["exception"] = caught,
+                    ["armedFor"] = JArray.FromObject(exceptions),
                     ["break"] = snap,
                     ["preHunt"] = preHunt,
-                    ["note"] = $"PAUSED at the fault under the debugger. Inspect: vs_debug_state / vs_get_frame_locals / vs_exception. Then vs_continue or vs_stop_debugging. (break-on-thrown for {exception} is still armed - clear it with vs_break_on_thrown enabled:false.)",
+                    ["note"] = "PAUSED at the fault under the debugger. Inspect: vs_debug_state / vs_get_frame_locals / vs_exception. Then vs_continue or vs_stop_debugging. (break-on-thrown is still armed - clear it with vs_break_on_thrown enabled:false.)",
                 });
+            }
             await Task.Delay(300, ct).ConfigureAwait(true);
         }
 
-        // 4) Not caught: disarm + stop any session so nothing is left half-armed.
-        await _driver.SetBreakOnThrownAsync(exception!, false, ct);
+        // 4) Not caught: disarm each + stop any session so nothing is left half-armed.
+        foreach (var ex in exceptions) await _driver.SetBreakOnThrownAsync(ex, false, ct);
         await _driver.StopDebuggingAsync(ct);
         return Ret(test, new JObject
         {
             ["caught"] = false,
             ["debugRuns"] = run,
-            ["exception"] = exception,
+            ["armedFor"] = JArray.FromObject(exceptions),
             ["preHunt"] = preHunt,
             ["note"] = "Not caught within the run/time budget. The flake may be rarer than the runs allowed, or the exception type doesn't match. Check the rate with vs_hunt_flaky, then raise maxRuns.",
         });
     }
 
+    // Assertion base types per framework - armed when a flaky ASSERT gives no exception type to learn. Break-on-
+    // thrown matches subclasses (e.g. Xunit.Sdk.TrueException derives from XunitException), so the base catches all.
+    private static readonly string[] AssertBaseTypes =
+    {
+        "Xunit.Sdk.XunitException",
+        "NUnit.Framework.AssertionException",
+        "Microsoft.VisualStudio.TestTools.UnitTesting.AssertFailedException",
+    };
+
     private object Ret(string test, JObject o)
     {
         Log.Info($"vs_catch_flaky(test={test}) -> caught={(bool?)o["caught"]}{((bool?)o["caught"] == true ? $" on run {o["onRun"]}" : "")}");
         return o;
+    }
+}
+
+/// <summary>vs_rerun_failed - re-run only the tests that failed in the last run (Scope.ForState(Failed)).</summary>
+internal sealed class VsRerunFailedTool : IIdeTool
+{
+    private readonly TestRunner _runner;
+    public VsRerunFailedTool(TestRunner runner) => _runner = runner;
+
+    public string Name => "vs_rerun_failed";
+    public string Description =>
+        "Re-run ONLY the tests that failed in the last run - the classic fix-verify move (fix, then re-run just "
+        + "the failures instead of the whole suite). Returns the same per-test {outcome, errorMessage, stack} as "
+        + "vs_run_test. If the last run had no remembered failures it runs nothing. Optional collectCoverage. "
+        + "Managed (.NET) test projects.";
+
+    public JToken Schema => new JObject
+    {
+        ["type"] = "object",
+        ["properties"] = new JObject
+        {
+            ["collectCoverage"] = new JObject { ["type"] = "boolean", ["description"] = "Collect code coverage for the re-run (default false)." },
+        },
+    };
+
+    public async Task<object> InvokeAsync(JToken args, CancellationToken ct)
+    {
+        bool coverage = (bool?)args["collectCoverage"] ?? false;
+        var result = await _runner.RunAsync(null, coverage, false, ct, build: true, failedOnly: true);
+        Log.Info($"vs_rerun_failed -> {(int?)result["testCount"] ?? 0} test(s), passed={(bool?)result["passed"]}");
+        Ui.BridgeStatus.RecordDebugInspect();
+        return result;
     }
 }

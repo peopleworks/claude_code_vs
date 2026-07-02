@@ -1,6 +1,6 @@
 # Claude Code for Visual Studio
 
-> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
+> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), **a test runner that catches failures under the debugger**, and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
 
 ![Demo](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/demo.gif)
 
@@ -20,6 +20,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 - **Diagnostics sharing** - Claude reads Visual Studio's compiler errors/warnings (C# and C++) and fixes them.
 - **Semantic code navigation** - Claude asks Visual Studio's compiler (Roslyn) for the *resolved* meaning of your C# code instead of grepping text: **find-all-references**, **go-to-definition**, **find-implementations**, and **call/type hierarchies**. These are the ground-truth answers text search gets wrong - indirect and interface-dispatched references, the *right* overload, explicit interface implementations, transitive callers for impact analysis. No debug session needed; it works whenever a C#/VB solution is loaded. Full reference: **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
 - **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can *drive* the debugger - continue, step, set breakpoints, **break at the throw site of an exception**, **set a data breakpoint that breaks (or traces the full change history) the moment a value changes**, **attach to a running app** (a hosted web service or desktop app, not just F5), and **pause a hung process to untangle a deadlock** (following the lock-ownership chain across threads to the exact cycle) - to corner a bug instead of guessing from source. Full reference: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
+- **Test integration** - Claude discovers, runs, and *debugs* your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and - the headline - **run a failing test under the debugger and stop at the fault**, or **hammer a flaky test until it fails and catch that iteration red-handed**, paused inside the failure. Because it's the debugger's own session, a red test becomes a live investigation. Full reference: **[`docs/TESTING.md`](docs/TESTING.md)**.
 - **Selection context** - Claude automatically knows the file and lines you're looking at.
 - **Live panel** - a dockable *Claude Code* panel: connection status, edit decisions, and **token usage + estimated cost** (latest call vs cumulative session).
 
@@ -52,6 +53,17 @@ Most assistants navigate code by **grepping text** — which misses indirect ref
 The headline is **`vs_decompile`**: the one thing reading your repo *fundamentally can't* give you — the **body of a method inside a referenced DLL**. Point Claude at a framework or NuGet call (`JsonConvert.SerializeObject`, `Enumerable.Where`) and it returns the real decompiled C#, the way Go-to-Definition does. For core .NET types it even fetches the **actual `dotnet/runtime` source** via SourceLink. No more guessing what a library call does from its name.
 
 It needs **no debugger session** — it works any time a C#/VB solution is open. Full tool list, the addressing model, and worked workflows are in **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
+
+## Catch a failing test — even the flaky ones (1.10.0)
+
+`dotnet test` runs tests; the CLI can already do that. What it *can't* do is **stop inside a failing test in Visual Studio's debugger**, or **reproduce a heisenbug on purpose and pause on it**. This release gives Claude Visual Studio's own **Test Explorer engine wired to the live debugger** — a closed **fix → verify → catch** loop:
+
+- **Run** — real per-test `outcome` + `errorMessage` + stack (data, not a text blob), one test or all, with code coverage.
+- **Re-run failures** — after a fix, re-run *only* the tests that failed, not the whole suite.
+- **Debug one** — launch a single failing test under the debugger and break at the **throw site** with `$exception` and locals live.
+- **Catch red-handed** — loop a flaky test under the debugger until the failing iteration halts on its own, leaving you *paused inside the failure* with the state that caused it — the one motion neither `dotnet test` nor a re-run loop can do.
+
+The run tools compose with the debugger tools (it's one session), so an intermittent red line goes from "can't reproduce" to "the debugger is paused on it." Full tool list and the worked flow are in **[`docs/TESTING.md`](docs/TESTING.md)**.
 
 ## Requirements
 
@@ -87,6 +99,8 @@ To make the **VS diff the single approval gate**, the extension installs a small
 
 For **debugger access**, it adds a `UserPromptSubmit` hook (injects live break state when you're paused) and a second MCP server, `vs-debug`, reached through a tiny stdio shim auto-registered in your workspace `.mcp.json`. Reading runtime state is always allowed; *driving* execution is opt-in behind a panel toggle. Details: **[`docs/DEBUGGER.md`](docs/DEBUGGER.md)**.
 
+The same `vs-debug` server also carries the **test-runner tools** (discover / run / re-run failures / debug / flaky-hunt) — they're co-located with the debugger on purpose, so a failing or intermittent test can be caught red-handed under it. Details: **[`docs/TESTING.md`](docs/TESTING.md)**.
+
 For **semantic navigation**, it adds a third MCP server, `vs-semantic` (the same shim, a different route), exposing Roslyn code-navigation tools backed by the live `VisualStudioWorkspace`. All read-only, no debug session required. Details: **[`docs/SEMANTIC.md`](docs/SEMANTIC.md)**.
 
 ## Privacy & security
@@ -107,6 +121,7 @@ For **semantic navigation**, it adds a third MCP server, `vs-semantic` (the same
 - **Diagnostics need a loaded project** (the Error List / Roslyn won't analyze loose files).
 - **Semantic navigation is C#/VB and needs a loaded project** - it reads the Roslyn workspace, so it sees the solution open in VS (not the CLI's working directory if they differ), and doesn't cover C++ navigation or loose files.
 - **Debugger features target managed (.NET) code.** Reading runtime state is always on; driving execution is opt-in. Native/C++ runtime inspection isn't covered.
+- **Test integration is managed (.NET) test projects** and needs a loaded solution. Coverage works; profiling is deferred, and the debug/flaky-catch tools are opt-in behind the debugger-drive toggle. See [`docs/TESTING.md`](docs/TESTING.md).
 - Token stats refresh **on edits** (the reliable hook trigger), so a chat-only turn may not update them immediately.
 - Cost figures are **estimates**, not billing.
 

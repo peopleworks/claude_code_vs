@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.10.0 - 2026-07-02
+
+**Test integration** — Visual Studio's Test Explorer engine as a closed **discover → run → debug → catch** loop, wired to the live debugger. `dotnet test` runs your tests; this lets Claude *stop inside a failing one* and *reproduce a heisenbug on purpose*. Full reference: [`docs/TESTING.md`](docs/TESTING.md).
+
+### Features
+
+- **`vs_list_tests`** — discover tests via Roslyn (methods marked `[Fact]`/`[Theory]`/`[Test]`/`[TestMethod]`/`[TestCase]`) → real fully-qualified names. No build needed just to list.
+- **`vs_run_test`** — run one (by FQN) or all through Test Explorer's engine; returns real per-test `{outcome, errorMessage, errorStackTrace, durationMs}`, not a text blob. `collectCoverage:true` attaches a `.coverage` file. Self-builds first.
+- **`vs_rerun_failed`** — re-run only the tests that failed in the last run (`Scope.ForState(Failed)`) — the classic fix-verify move.
+- **`vs_debug_test`** — launch one test under the Visual Studio debugger; pair with `vs_break_on_thrown` to stop at the throw site with `$exception` and locals live.
+- **`vs_hunt_flaky`** / **`vs_hunt_result`** / **`vs_hunt_cancel`** — force-reproduce an intermittent failure by hammering a test until it fails, capturing each failing run's real outcome/message/stack. Runs in the **background** (async start+poll: returns a `huntId` when it exceeds a ~40s inline window); `measureRate:true` estimates the failure rate.
+- **`vs_catch_flaky`** — **catch a transient bug red-handed**: loop a test under the debugger with break-on-thrown armed until the failing iteration halts at the throw, paused inside the failure for inspection. Auto-learns the exception type (or arms the framework assertion base type for a bare assert). Gated behind the debugger-drive toggle.
+
+### Notes
+
+- The test tools live on the **`vs-debug` MCP server** (not a new server) — co-located with the debugger, because the headline feature composes with it. Backed by `Testing/TestRunner.cs` (+ `HuntState`, `TestResultCallback`) and `Tools/TestTools.cs`; discovery by `RoslynReader.FindTestMethodsAsync`.
+- **Real per-test results come through an emitted callback.** The engine's `RunTestsAsync` return is identical for pass and fail; per-test outcome/message/stack come only through the internal `ITestWindowDataCallback`, which can't be implemented in C#/`DispatchProxy` — so we `Reflection.Emit` a type implementing it with `[IgnoresAccessChecksTo]`. The engine is acquired **in-proc via MEF** (`IRequestFactory`); the `.vsix` ships zero TestWindow DLLs.
+- **Long hunts are async (start + poll), not deferred.** The `/mcp` shim has a ~60s HTTP timeout, so a multi-minute hunt runs on a background task and is polled — the `openDiff` deferred-reply pattern only works on the persistent WebSocket.
+- New `demo/TestLab` fixture (net10 xUnit): a pass, a failed assertion, a throw, and two ~1-in-3 intermittent tests for the flaky-hunter/catcher. Verified end-to-end via the CLI tools and a raw `/mcp` suite.
+- **Managed (.NET) test projects**, loaded solution required. Coverage works; **profiling is deferred** (needs a Diagnostics-Hub `ProfilerToolId`); the debug/flaky-catch tools are opt-in behind the debugger-drive toggle. Follow-ups: run-tests-affected-by-a-change, profiling, and an `IOperationState` engine-idle wait to make rate measurement robust.
+- Removed the internal `vs_test_probe` diagnostic (a development-time acquisition canary) and the standalone `spike-concord/` proof-of-concept directory (the shipped data-breakpoint component lives in `src/ClaudeCodeVS.DataBpComponent/`).
+
 ## 1.9.0 - 2026-06-29
 
 **Semantic code navigation** — Visual Studio's resolved understanding of your code (Roslyn), exposed as read-only tools so Claude navigates by ground truth instead of grepping text. The third knowledge axis after runtime state (debugger) and diagnostics. Full reference: [`docs/SEMANTIC.md`](docs/SEMANTIC.md).

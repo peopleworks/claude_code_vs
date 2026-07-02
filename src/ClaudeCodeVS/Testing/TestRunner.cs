@@ -35,6 +35,7 @@ internal sealed class TestRunner
 {
     private const string AsmController = "Microsoft.VisualStudio.TestWindow.dll";
     private const string AsmInternal = "Microsoft.VisualStudio.TestWindow.Internal.dll";
+    private const string AsmInterfaces = "Microsoft.VisualStudio.TestWindow.Interfaces.dll";
 
     private object? _broker;      // OperationBroker (implements IRequestFactory + IOperationState)
     private Type? _reqFactory;    // IRequestFactory type
@@ -52,12 +53,12 @@ internal sealed class TestRunner
     });
 
     /// <summary>Run tests by fully-qualified name (or all). Awaits the engine's own completion task.</summary>
-    public async Task<JObject> RunAsync(string? fqn, bool collectCoverage, bool profile, CancellationToken ct, bool build = true)
+    public async Task<JObject> RunAsync(string? fqn, bool collectCoverage, bool profile, CancellationToken ct, bool build = true, bool failedOnly = false)
     {
         var (broker, type, err) = await AcquireAsync(ct);
         if (broker == null) return new JObject { ["ok"] = false, ["error"] = err };
         await EnsureLoadedAsync(ct);
-        var report = new JObject { ["target"] = fqn ?? "(all)" };
+        var report = new JObject { ["target"] = failedOnly ? "(failed)" : fqn ?? "(all)" };
         if (build) report["build"] = await BuildSolutionAsync(ct); // self-sufficient: no manual Ctrl+Shift+B needed
 
         // Wire Test Explorer's INTERNAL result callback (emitted, since it's an internal interface) so we
@@ -73,7 +74,7 @@ internal sealed class TestRunner
 
         try
         {
-            object? resp = await RunTestsAsyncReflect(broker, type!, fqn, collectCoverage, profile, callbackOptions, ct);
+            object? resp = await RunTestsAsyncReflect(broker, type!, fqn, collectCoverage, profile, callbackOptions, ct, failedOnly);
             report["mode"] = profile ? "Profile" : "Run";
             report["coverageRequested"] = collectCoverage;
             report["response"] = DescribeResponse(resp);
@@ -276,10 +277,10 @@ internal sealed class TestRunner
 
     // ---------------- run variants ----------------
 
-    private async Task<object?> RunTestsAsyncReflect(object broker, Type type, string? fqn, bool coverage, bool profile, object? callbackOptions, CancellationToken ct)
+    private async Task<object?> RunTestsAsyncReflect(object broker, Type type, string? fqn, bool coverage, bool profile, object? callbackOptions, CancellationToken ct, bool failedOnly = false)
     {
         // RunTestsAsync(TestHostMode mode, TestFilterOptions filter, TestRunOptions runOptions, TestCallbackOptions callbackOptions, ct)
-        object? filter = BuildScopeFilter(fqn);
+        object? filter = failedOnly ? BuildStateFilter("Failed") : BuildScopeFilter(fqn);
         object runOpts = BuildRunOptions(coverage);
         var modeType = FindType("Microsoft.VisualStudio.TestWindow.Messages.TestHostMode", AsmInternal)!;
         object mode = Enum.ToObject(modeType, profile ? 2 : 0);
@@ -361,6 +362,23 @@ internal sealed class TestRunner
             if (scope != null) list.Add(scope);
         }
         // RunTestsAsync rejects a null filter; a NON-null TestFilterOptions with an EMPTY scope list = run all.
+        var ctor = tfoType.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
+        return ctor.Invoke(new object?[] { list, null });
+    }
+
+    /// <summary>TestFilterOptions([Scope.ForState(TestState.Failed)]) - re-run only the tests in a given
+    /// last-run state (Failed). TestState lives in the .Interfaces assembly.</summary>
+    private object? BuildStateFilter(string stateName)
+    {
+        var scopeType = FindType("Microsoft.VisualStudio.TestWindow.Extensibility.Scope", AsmInternal);
+        var tfoType = FindType("Microsoft.VisualStudio.TestWindow.Extensibility.TestFilterOptions", AsmInternal);
+        var stateType = FindType("Microsoft.VisualStudio.TestWindow.Extensibility.TestState", AsmInterfaces);
+        if (scopeType == null || tfoType == null || stateType == null) return null;
+        object stateVal = EnumVal(stateType, new[] { stateName }, 1); // TestState.Failed = 1
+        object? scope = scopeType.GetMethod("ForState", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, new[] { stateVal });
+        if (scope == null) return null;
+        var list = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(scopeType))!;
+        list.Add(scope);
         var ctor = tfoType.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
         return ctor.Invoke(new object?[] { list, null });
     }

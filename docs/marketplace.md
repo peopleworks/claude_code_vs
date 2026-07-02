@@ -8,7 +8,7 @@
 
 # Claude Code for Visual Studio
 
-> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
+> Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026** - a native diff window with accept/reject, automatic selection + compiler-diagnostics context, **live debugger access**, **semantic code navigation + decompile** (Roslyn), **a test runner that catches failures under the debugger**, and a stats panel. The `claude` CLI does the agent work; this extension is the **IDE half** of Claude Code's integration protocol.
 
 ![Demo](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/demo.gif)
 
@@ -28,6 +28,7 @@ Claude Code has first-class IDE integration for VS Code and JetBrains, but not V
 - **Diagnostics sharing** - Claude reads Visual Studio's compiler errors/warnings (C# and C++) and fixes them.
 - **Semantic code navigation** - Claude asks Visual Studio's compiler (Roslyn) for the *resolved* meaning of your C# code instead of grepping text: **find-all-references**, **go-to-definition**, **find-implementations**, and **call/type hierarchies**. These are the ground-truth answers text search gets wrong - indirect and interface-dispatched references, the *right* overload, explicit interface implementations, transitive callers for impact analysis. No debug session needed; it works whenever a C#/VB solution is loaded. Full reference: **[the semantic-navigation guide](https://github.com/firish/claude_code_vs/blob/main/docs/SEMANTIC.md)**.
 - **Live debugger** - while you're paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can *drive* the debugger - continue, step, set breakpoints, **break at the throw site of an exception**, **set a data breakpoint that breaks (or traces the full change history) the moment a value changes**, **attach to a running app** (a hosted web service or desktop app, not just F5), and **pause a hung process to untangle a deadlock** (following the lock-ownership chain across threads to the exact cycle) - to corner a bug instead of guessing from source. Full reference: **[the debugger guide](https://github.com/firish/claude_code_vs/blob/main/docs/DEBUGGER.md)**.
+- **Test integration** - Claude discovers, runs, and *debugs* your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and - the headline - **run a failing test under the debugger and stop at the fault**, or **hammer a flaky test until it fails and catch that iteration red-handed**, paused inside the failure. Because it's the debugger's own session, a red test becomes a live investigation. Full reference: **[the testing guide](https://github.com/firish/claude_code_vs/blob/main/docs/TESTING.md)**.
 - **Selection context** - Claude automatically knows the file and lines you're looking at.
 - **Live panel** - a dockable *Claude Code* panel: connection status, edit decisions, and **token usage + estimated cost** (latest call vs cumulative session).
 
@@ -61,6 +62,17 @@ The headline is **decompile**: the one thing reading your repo *fundamentally ca
 
 It needs **no debugger session** — it works any time a C#/VB solution is open. Full tool list, the addressing model, and worked workflows are in **[the semantic-navigation guide](https://github.com/firish/claude_code_vs/blob/main/docs/SEMANTIC.md)**.
 
+## Catch a failing test — even the flaky ones (1.10.0)
+
+`dotnet test` runs tests; the CLI can already do that. What it *can't* do is **stop inside a failing test in Visual Studio's debugger**, or **reproduce a heisenbug on purpose and pause on it**. This release gives Claude Visual Studio's own **Test Explorer engine wired to the live debugger** — a closed **fix → verify → catch** loop:
+
+- **Run** — real per-test `outcome` + `errorMessage` + stack (data, not a text blob), one test or all, with code coverage.
+- **Re-run failures** — after a fix, re-run *only* the tests that failed, not the whole suite.
+- **Debug one** — launch a single failing test under the debugger and break at the **throw site** with `$exception` and locals live.
+- **Catch red-handed** — loop a flaky test under the debugger until the failing iteration halts on its own, leaving you *paused inside the failure* with the state that caused it — the one motion neither `dotnet test` nor a re-run loop can do.
+
+The run tools compose with the debugger tools (it's one session), so an intermittent red line goes from "can't reproduce" to "the debugger is paused on it." Full tool list and the worked flow are in **[the testing guide](https://github.com/firish/claude_code_vs/blob/main/docs/TESTING.md)**.
+
 ## Requirements
 
 - **Visual Studio 2026.**
@@ -85,7 +97,7 @@ It needs **no debugger session** — it works any time a C#/VB solution is open.
 
 ## How it works
 
-This is a **protocol bridge**, not a re-implementation of the agent. On Launch it starts a localhost WebSocket server, launches `claude` already connected to the IDE, and implements the IDE tools the CLI drives (the diff, diagnostics, selection updates). A small **PreToolUse hook** routes proposed edits through the VS diff so approving there is the only gate. Debugger access and semantic navigation are exposed as two extra MCP servers (`vs-debug`, `vs-semantic`) the CLI reaches through a tiny stdio shim. **The CLI does all agent work; the extension never makes model calls.**
+This is a **protocol bridge**, not a re-implementation of the agent. On Launch it starts a localhost WebSocket server, launches `claude` already connected to the IDE, and implements the IDE tools the CLI drives (the diff, diagnostics, selection updates). A small **PreToolUse hook** routes proposed edits through the VS diff so approving there is the only gate. Debugger access, the test runner, and semantic navigation are exposed as extra MCP servers (`vs-debug` — the debugger *and* the test tools, since they compose; `vs-semantic` — Roslyn) the CLI reaches through a tiny stdio shim. **The CLI does all agent work; the extension never makes model calls.**
 
 ## Privacy & security
 
@@ -101,6 +113,7 @@ This is a **protocol bridge**, not a re-implementation of the agent. On Launch i
 - **Diagnostics need a loaded project** (the Error List / Roslyn won't analyze loose files).
 - **Semantic navigation is C#/VB and needs a loaded project** - it reads the Roslyn workspace, so it sees the solution open in VS (not the CLI's working directory if they differ), and doesn't cover C++ navigation or loose files.
 - **Debugger features target managed (.NET) code.** Reading runtime state is always on; driving execution is opt-in. Native/C++ runtime inspection isn't covered.
+- **Test integration is managed (.NET) test projects** and needs a loaded solution. Coverage works; profiling is deferred, and the debug/flaky-catch tools are opt-in behind the debugger-drive toggle. See **[the testing guide](https://github.com/firish/claude_code_vs/blob/main/docs/TESTING.md)**.
 - Token stats refresh **on edits** (the reliable hook trigger), so a chat-only turn may not update them immediately.
 - Cost figures are **estimates**, not billing.
 
