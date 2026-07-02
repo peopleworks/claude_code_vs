@@ -258,6 +258,16 @@ internal sealed class BridgeHost : IDisposable
     /// </summary>
     private static IEnumerable<IIdeTool> BuildDebugTools(Debugging.DebuggerDriver driver, Debugging.DataBreakpointBridge dataBp)
     {
+        // Test integration - VS's Test Explorer engine as a discover -> run -> debug -> catch loop (docs/TESTING.md).
+        var testRunner = new Testing.TestRunner();
+        yield return new VsListTestsTool(testRunner);   // discover (Roslyn)
+        yield return new VsRunTestTool(testRunner);     // run one/all + coverage
+        yield return new VsRerunFailedTool(testRunner); // re-run only the last run's failures
+        yield return new VsDebugTestTool(testRunner);   // launch one under the debugger
+        yield return new VsHuntFlakyTool(testRunner);   // force-reproduce a flaky failure (async start+poll)
+        yield return new VsHuntResultTool(testRunner);  // poll a background hunt
+        yield return new VsHuntCancelTool(testRunner);  // cancel a background hunt
+        yield return new VsCatchFlakyTool(testRunner, driver); // catch red-handed under the debugger
         // Phase 2 - read/pull (ungated).
         yield return new VsDebugStateTool();
         yield return new VsListBreakpointsTool();
