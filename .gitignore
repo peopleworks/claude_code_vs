@@ -24,6 +24,9 @@ obj/
 publish/
 
 # Specific files
+# Source screen recordings (kept local; the README uses a compressed GIF, the full walkthrough is hosted externally)
 /docs/debugger.gif
+/docs/debugger.mp4
+/docs/images/*.mp4
 # Test run artifacts
 **/TestResults/

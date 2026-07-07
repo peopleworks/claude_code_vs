@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for MANAGED DATA BREAKPOINTS ("break when this field changes"): plain watch, CONDITIONAL
+       (break only when the new value matches, e.g. "< 0"), and RECURRING (stop on each matching change).
+       order.TotalCents ends up wrong (negative), but the final number never says WHICH of four pricing
+       steps corrupted it - and each step writes the field from a DIFFERENT method, so there's no single
+       line to breakpoint. That's the case a data breakpoint owns: watch the FIELD, not a line. See
+       README.md for the full walkthrough. Engine constraints honored: TotalCents/Writes are PUBLIC
+       INSTANCE FIELDS (not properties/locals/statics), each <= 8 bytes (long/int - decimal's 16 bytes
+       exceeds the hardware data-watch limit, hence integer cents), x64, net8.0 (>= .NET Core 3.0). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>  <!-- data breakpoints require an x64 debuggee -->
+  </PropertyGroup>
+
+</Project>

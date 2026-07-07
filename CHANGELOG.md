@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.1 - 2026-07-06
+
+Two reliability fixes for the bridge.
+
+### Fixes
+
+- **The panel now warns when the pull-MCP tools didn't load.** The IDE WebSocket auto-connects at CLI startup, but the `vs-debug` / `vs-semantic` / test tools only work if the CLI *also* loaded our MCP servers over the stdio shim — which silently doesn't happen when Claude is launched outside the workspace folder, or the project MCP servers weren't approved. `BridgeHost` now arms a 10s grace window on connect and, if no `/mcp` handshake arrives, raises a panel banner with the remedy (relaunch from the panel / approve the project servers) instead of the tools just being mysteriously absent. Backed by a new `IdeWebSocketServer.McpActivity` signal; sticky per bridge, so a WebSocket reconnect of an already-proven session never re-warns.
+- **The break-state hook no longer gets killed when VS's UI thread is busy.** The `UserPromptSubmit` debug-context hook hops to the main thread to read break state; if the UI thread was busy (a build, an F5 deploy, a modal dialog) that hop could block past the CLI's 10s hook budget and the hook's output was discarded. It now caps the hop at 2s and fails open with `{"mode":"unknown"}` (a busy UI thread means we're not paused, so there's nothing to inject anyway), and the PowerShell-side timeout drops 5s→4s to stay under the hook budget.
+
 ## 1.10.0 - 2026-07-02
 
 **Test integration** — Visual Studio's Test Explorer engine as a closed **discover → run → debug → catch** loop, wired to the live debugger. `dotnet test` runs your tests; this lets Claude *stop inside a failing one* and *reproduce a heisenbug on purpose*. Full reference: [`docs/TESTING.md`](docs/TESTING.md).

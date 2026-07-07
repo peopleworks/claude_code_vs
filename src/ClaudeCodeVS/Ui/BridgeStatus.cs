@@ -33,6 +33,15 @@ internal static class BridgeStatus
     /// <summary>When the CLI most recently connected (for an uptime readout); null while disconnected.</summary>
     public static DateTime? ConnectedSince { get; private set; }
 
+    /// <summary>
+    /// True when the CLI's IDE WebSocket connected but our PULL MCP servers (vs-debug / vs-semantic /
+    /// tests) never handshook within the grace window - i.e. those tools didn't load for this session
+    /// (usually: Claude was launched outside the workspace folder, or the project MCP servers weren't
+    /// approved). BridgeHost's connect/MCP-activity watcher sets it; the panel renders an amber banner
+    /// with the remedy. Cleared the moment any /mcp activity arrives (a late approval) or the CLI drops.
+    /// </summary>
+    public static bool ToolsWarning { get; private set; }
+
     public static int EditsAccepted { get; private set; }
     public static int EditsRejected { get; private set; }
 
@@ -133,6 +142,14 @@ internal static class BridgeStatus
     {
         Connected = connected;
         ConnectedSince = connected ? DateTime.Now : null;
+        Changed?.Invoke();
+    }
+
+    /// <summary>Set by BridgeHost's MCP-load watcher; see <see cref="ToolsWarning"/>. No-ops when unchanged.</summary>
+    public static void SetToolsWarning(bool value)
+    {
+        if (ToolsWarning == value) return;
+        ToolsWarning = value;
         Changed?.Invoke();
     }
 
