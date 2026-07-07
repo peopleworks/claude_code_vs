@@ -42,10 +42,14 @@ try {
 
     $body = @{ cwd = $p.cwd } | ConvertTo-Json -Compress
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    # Short timeout on purpose: the bridge itself caps the UI-thread read at ~2s and answers fast (real
+    # state when paused, "unknown" when the UI thread is busy). We only need headroom over that. Keeping
+    # it well under the 10s hook budget means a slow/busy VS never gets this hook killed - it just injects
+    # nothing this turn (fail-open via the outer catch).
     $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/debug-context" -Method Post `
         -ContentType 'application/json; charset=utf-8' `
         -Headers @{ 'x-claude-code-ide-authorization' = $token } `
-        -Body $bytes -TimeoutSec 5
+        -Body $bytes -TimeoutSec 4
 
     # Only inject while actually stopped at a breakpoint.
     if (-not $resp -or $resp.mode -ne 'break') { exit 0 }

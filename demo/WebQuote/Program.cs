@@ -16,7 +16,7 @@ var orders = new Dictionary<int, Order>
 {
     [101] = new Order { Id = 101, Customer = new Customer { Name = "Acme",    Tier = "Gold"   } },
     [102] = new Order { Id = 102, Customer = new Customer { Name = "Globex",  Tier = "Silver" } },
-    [103] = new Order { Id = 103, Customer = null },   // the landmine: null customer
+    [103] = new Order { Id = 103, Customer = new Customer { Name = "Hooli", Tier = "Silver" } },  // fixed: was null (the 500 landmine)
     [104] = new Order { Id = 104, Customer = new Customer { Name = "Initech", Tier = "Gold"   } },
 };
 
@@ -26,6 +26,8 @@ app.MapGet("/quote/{id:int}", (int id) =>
 {
     if (!orders.TryGetValue(id, out var order))
         return Results.NotFound($"no order {id}");
+    if (order.Customer is null)
+        return Results.UnprocessableEntity($"order {id} has no customer; cannot price");
     try
     {
         var price = Pricing.QuoteFor(order);

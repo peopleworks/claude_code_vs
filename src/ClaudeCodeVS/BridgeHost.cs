@@ -31,6 +31,17 @@ internal sealed class BridgeHost : IDisposable
     private Debugging.DebuggerDriver? _driver; // Phase 3: drives the debugger (continue/step/breakpoints)
     private Debugging.DataBreakpointBridge? _dataBpBridge; // managed data breakpoints (Concord component bridge)
 
+    // "Connected but the PULL tools didn't load" detection. The IDE WebSocket auto-connects at CLI
+    // startup; if the CLI also loaded our MCP servers, the stdio shim's handshake hits /mcp within a
+    // couple seconds. If nothing hits /mcp within this window after a connect, the vs-debug/vs-semantic/
+    // test tools aren't available (Claude was launched outside the workspace, or the project servers
+    // weren't approved) - we raise a panel banner instead of failing silently. _mcpEverSeen is sticky
+    // for the bridge's life so a WS reconnect of an already-proven session never re-warns.
+    private static readonly TimeSpan McpGraceWindow = TimeSpan.FromSeconds(10);
+    private readonly object _mcpGate = new();
+    private CancellationTokenSource? _mcpGraceCts;
+    private volatile bool _mcpEverSeen;
+
     public BridgeHost(AsyncPackage package) => _package = package;
 
     /// <summary>The port the bridge is listening on, or null if not started yet.</summary>
@@ -72,6 +83,7 @@ internal sealed class BridgeHost : IDisposable
         _server.ConnectionChanged += connected =>
         {
             Ui.BridgeStatus.SetConnected(connected);
+            WatchMcpLoad(connected); // arm/stand-down the "PULL tools didn't load" detector
             if (connected) return;
 #pragma warning disable VSSDK007
             ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
@@ -81,6 +93,9 @@ internal sealed class BridgeHost : IDisposable
             }).FileAndForget("claudecodevs/disconnectCleanup");
 #pragma warning restore VSSDK007
         };
+
+        // The other half of the detector: any /mcp or /mcp-semantic hit proves the MCP servers loaded.
+        _server.McpActivity += OnMcpActivity;
 
         // Single-gate: the PreToolUse hook POSTs to /permission, which routes here to show the diff.
         _server.PermissionHandler = ShowPermissionDiffAsync;
@@ -204,7 +219,23 @@ internal sealed class BridgeHost : IDisposable
     {
         try
         {
-            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+            // Bound the UI-thread hop. This hook runs on EVERY prompt; if VS's main thread is busy (a
+            // build, an F5 deploy, a modal dialog) the switch blocks until it frees - long enough that the
+            // CLI kills the 10s UserPromptSubmit hook and discards its output. We only inject in BREAK
+            // mode, and at a breakpoint the UI thread is idle (so the switch is instant). A busy UI thread
+            // means we're NOT paused, so bailing fast with "unknown" (inject nothing) loses nothing. The
+            // 2s cap sits under the hook's client-side HTTP timeout, so the hook returns cleanly.
+            using var switchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            switchCts.CancelAfter(TimeSpan.FromSeconds(2));
+            try
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(switchCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Log.Event("debug-context: VS UI thread busy (>2s) - not paused; injecting nothing this turn");
+                return "{\"mode\":\"unknown\"}";
+            }
             // Fully qualified: `using System.Diagnostics` is in scope here, so a bare `Debugging` could
             // be misread - and `Debug` would collide with System.Diagnostics.Debug outright.
             var snap = ClaudeCodeVs.Debugging.DebuggerReader.ReadSnapshot();
@@ -228,6 +259,71 @@ internal sealed class BridgeHost : IDisposable
         {
             Log.Warn($"debug-context read failed: {e.Message}");
             return "{\"mode\":\"unknown\"}";
+        }
+    }
+
+    /// <summary>
+    /// Detect the "IDE WebSocket connected but the PULL MCP tools didn't load" gap. On connect we arm a
+    /// grace window; if no /mcp activity (the shim's startup handshake) arrives before it elapses, the
+    /// vs-debug/vs-semantic/test tools aren't available for this session - surface a panel banner with the
+    /// remedy. <see cref="OnMcpActivity"/> is the other half. Runs on the WS accept thread; BridgeStatus
+    /// marshals to the UI. The warning is set and cleared under <see cref="_mcpGate"/> so a late handshake
+    /// racing the timer can't leave the banner stuck on.
+    /// </summary>
+    private void WatchMcpLoad(bool connected)
+    {
+        if (!connected)
+        {
+            lock (_mcpGate)
+            {
+                _mcpGraceCts?.Cancel();
+                _mcpGraceCts?.Dispose();
+                _mcpGraceCts = null;
+                Ui.BridgeStatus.SetToolsWarning(false);
+            }
+            return;
+        }
+
+        // Already proven (this CLI, or a prior one on this bridge): a WS reconnect doesn't re-handshake
+        // MCP, so don't re-arm - that would false-warn a healthy session.
+        if (_mcpEverSeen) return;
+
+        CancellationToken token;
+        lock (_mcpGate)
+        {
+            _mcpGraceCts?.Cancel();
+            _mcpGraceCts?.Dispose();
+            _mcpGraceCts = new CancellationTokenSource();
+            token = _mcpGraceCts.Token;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(McpGraceWindow, token); }
+            catch (OperationCanceledException) { return; } // disconnected, or MCP activity arrived first
+            lock (_mcpGate)
+            {
+                if (_mcpEverSeen || token.IsCancellationRequested) return;
+                Ui.BridgeStatus.SetToolsWarning(true);
+            }
+            Log.Warn("Debugger / semantic / test tools didn't load for this session - relaunch Claude from " +
+                     "the panel (or inside the workspace folder) and approve the project MCP servers if prompted.");
+        });
+    }
+
+    /// <summary>
+    /// First /mcp or /mcp-semantic hit - the CLI loaded our MCP servers, so stand the warning down (even a
+    /// late hit after the user approves the project servers clears it). Sticky: every subsequent MCP
+    /// request short-circuits on the volatile read before taking the lock.
+    /// </summary>
+    private void OnMcpActivity()
+    {
+        if (_mcpEverSeen) return; // steady-state fast path (fires on every MCP request)
+        lock (_mcpGate)
+        {
+            _mcpEverSeen = true;
+            _mcpGraceCts?.Cancel();
+            Ui.BridgeStatus.SetToolsWarning(false);
         }
     }
 
@@ -415,6 +511,7 @@ internal sealed class BridgeHost : IDisposable
     public void Dispose()
     {
         try { _cts.Cancel(); } catch { /* shutting down */ }
+        try { lock (_mcpGate) { _mcpGraceCts?.Cancel(); _mcpGraceCts?.Dispose(); _mcpGraceCts = null; } } catch { /* shutting down */ }
         _watcher?.Dispose();
         _driver?.Dispose(); // unadvise the IVsDebugger event sink (best-effort)
         _dataBpBridge?.Dispose(); // stop the data-breakpoint change tailer

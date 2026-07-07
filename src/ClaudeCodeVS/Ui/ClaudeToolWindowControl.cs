@@ -31,6 +31,9 @@ internal sealed class ClaudeToolWindowControl : UserControl
     private static readonly Brush DotIdle = Freeze(Color.FromRgb(0x9A, 0x9A, 0x9A));
     private static readonly Brush ErrText = Freeze(Color.FromRgb(0xE0, 0x6C, 0x5C));
     private static readonly Brush WarnText = Freeze(Color.FromRgb(0xD0, 0x9A, 0x36));
+    // Translucent amber for the "tools didn't load" banner - reads on dark and light like the gray chips.
+    private static readonly Brush WarnFill = Freeze(Color.FromArgb(30, 0xD0, 0x9A, 0x36));
+    private static readonly Brush WarnBorder = Freeze(Color.FromArgb(96, 0xD0, 0x9A, 0x36));
     private static readonly FontFamily Mono = new("Cascadia Mono, Consolas, monospace");
 
     private readonly Ellipse _dot;
@@ -42,6 +45,8 @@ internal sealed class ClaudeToolWindowControl : UserControl
     private readonly TextBlock _sessionLine;
     private readonly Border _pendingCard;
     private readonly TextBlock _pendingText;
+    private readonly Border _toolsWarningCard;
+    private readonly TextBlock _toolsWarningText;
     private readonly CheckBox _autoAccept;
     private readonly CheckBox _allowDrive;
     private readonly ListBox _feed;
@@ -58,7 +63,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
         SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
         var root = new Grid { Margin = new Thickness(10, 8, 10, 8) };
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 6; i++)
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // feed
 
@@ -116,7 +121,37 @@ internal sealed class ClaudeToolWindowControl : UserControl
         toolbar.Children.Add(left);
         Grid.SetRow(toolbar, 1);
 
-        // ---- Row 2: stats card ----
+        // ---- Row 2: "extra tools didn't load" banner (collapsed unless the PULL MCP servers failed) ----
+        // Surfaces the otherwise-silent gap where the IDE WebSocket connected but vs-debug/vs-semantic/
+        // tests never loaded (Claude launched outside the workspace, or project servers unapproved).
+        var warnStack = new StackPanel();
+        warnStack.Children.Add(new TextBlock
+        {
+            Text = "⚠  Debugger / semantic / test tools didn't load",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = WarnText,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        _toolsWarningText = new TextBlock { FontSize = 11.5, Opacity = 0.85, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) };
+        warnStack.Children.Add(_toolsWarningText);
+        var warnButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        warnButtons.Children.Add(MakeButton("Relaunch Claude Code", () => { _ = BridgeStatus.LaunchAction?.Invoke(); }));
+        warnStack.Children.Add(warnButtons);
+        _toolsWarningCard = new Border
+        {
+            Background = WarnFill,
+            BorderBrush = WarnBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 8, 10, 8),
+            Margin = new Thickness(0, 0, 0, 8),
+            Visibility = Visibility.Collapsed,
+            Child = warnStack,
+        };
+        Grid.SetRow(_toolsWarningCard, 2);
+
+        // ---- Row 3: stats card ----
         _editsLine = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap };
         _debugLine = new TextBlock { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) };
         _latestLine = new TextBlock { FontSize = 12, Opacity = 0.9, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
@@ -143,9 +178,9 @@ internal sealed class ClaudeToolWindowControl : UserControl
             Margin = new Thickness(0, 0, 0, 8),
             Child = statsStack,
         };
-        Grid.SetRow(statsCard, 2);
+        Grid.SetRow(statsCard, 3);
 
-        // ---- Row 3: pending diffs (collapsed when none) ----
+        // ---- Row 4: pending diffs (collapsed when none) ----
         _pendingText = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap };
         _pendingCard = new Border
         {
@@ -156,13 +191,13 @@ internal sealed class ClaudeToolWindowControl : UserControl
             Visibility = Visibility.Collapsed,
             Child = _pendingText,
         };
-        Grid.SetRow(_pendingCard, 3);
+        Grid.SetRow(_pendingCard, 4);
 
-        // ---- Row 4: feed label ----
+        // ---- Row 5: feed label ----
         var feedLabel = new TextBlock { Text = "ACTIVITY", FontSize = 10, FontWeight = FontWeights.SemiBold, Opacity = 0.55, Margin = new Thickness(2, 0, 0, 4) };
-        Grid.SetRow(feedLabel, 4);
+        Grid.SetRow(feedLabel, 5);
 
-        // ---- Row 5: curated activity feed ----
+        // ---- Row 6: curated activity feed ----
         _feed = new ListBox
         {
             BorderThickness = new Thickness(1),
@@ -172,10 +207,11 @@ internal sealed class ClaudeToolWindowControl : UserControl
         };
         ScrollViewer.SetHorizontalScrollBarVisibility(_feed, ScrollBarVisibility.Auto);
         _feed.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        Grid.SetRow(_feed, 5);
+        Grid.SetRow(_feed, 6);
 
         root.Children.Add(header);
         root.Children.Add(toolbar);
+        root.Children.Add(_toolsWarningCard);
         root.Children.Add(statsCard);
         root.Children.Add(_pendingCard);
         root.Children.Add(feedLabel);
@@ -312,6 +348,22 @@ internal sealed class ClaudeToolWindowControl : UserControl
             foreach (var p in pending) names.Add(System.IO.Path.GetFileName(p));
             _pendingText.Text = $"⏳ Awaiting your review:  {string.Join(",  ", names)}";
             _pendingCard.Visibility = Visibility.Visible;
+        }
+
+        // "Tools didn't load" banner: only meaningful while connected (BridgeHost clears it on disconnect).
+        if (BridgeStatus.ToolsWarning && BridgeStatus.Connected)
+        {
+            _toolsWarningText.Text =
+                "Claude connected, but the vs-debug / vs-semantic / test tools aren't available this session. " +
+                "Usually Claude was launched outside the solution folder" +
+                (string.IsNullOrEmpty(BridgeStatus.Workspace) ? "" : $" ({BridgeStatus.Workspace})") +
+                ", or the project MCP servers weren't approved. Relaunch from here (pins the right folder), " +
+                "then approve the vs-debug / vs-semantic servers if prompted.";
+            _toolsWarningCard.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _toolsWarningCard.Visibility = Visibility.Collapsed;
         }
     }
 

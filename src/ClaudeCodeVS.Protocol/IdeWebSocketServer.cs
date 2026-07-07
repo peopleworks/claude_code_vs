@@ -28,6 +28,15 @@ public sealed class IdeWebSocketServer
     public event Action<bool>? ConnectionChanged;
 
     /// <summary>
+    /// Raised when a PULL MCP request (/mcp or /mcp-semantic) is handled - proof the CLI actually loaded
+    /// our MCP servers (the stdio shim only POSTs here once it's been spawned + handshook at session
+    /// start). BridgeHost uses this to detect the "IDE WebSocket connected but the vs-debug/vs-semantic/
+    /// test tools never loaded" gap (Claude launched outside the workspace, or project servers unapproved)
+    /// and surface it on the panel instead of failing silently.
+    /// </summary>
+    public event Action? McpActivity;
+
+    /// <summary>
     /// Handles a POST /permission request from the PreToolUse hook: given (filePath, proposed new
     /// contents), show a review diff and return whether to allow the edit (+ an optional reject reason
     /// to feed back to the CLI). Set by the VSIX; null means no handler (fail-open). This is how
@@ -300,6 +309,10 @@ public sealed class IdeWebSocketServer
     /// </summary>
     private async Task HandleMcpRequestAsync(HttpListenerContext ctx, McpServer? mcp, string routePath, CancellationToken ct)
     {
+        // Any hit here proves the CLI loaded our MCP servers (the shim only reaches this route once it's
+        // been spawned and handshook). Signal it so the "tools didn't load" watcher can stand down.
+        try { McpActivity?.Invoke(); } catch { }
+
         string? response = null;
         try
         {
