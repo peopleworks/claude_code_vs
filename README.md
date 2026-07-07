@@ -2,15 +2,25 @@
 
 Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026**. The `claude` CLI does the agent work. This extension is the IDE half of Claude Code's integration protocol: a native diff window with accept and reject, automatic selection and compiler-diagnostics context, a live debugger Claude can read and drive, Roslyn code navigation with decompile, and a test runner that catches failures under the debugger.
 
-![Claude sets a breakpoint in Visual Studio, steps through a scoring loop to find a bug that never shows in the output, and its fix opens in the diff viewer](docs/debugger.gif)
+![Claude drives the Visual Studio debugger, stepping through a scoring loop to find a bug that never shows in the output, then its fix opens in the diff viewer](docs/images/debugger-hero.gif)
 
 *A fresh Claude session driving the Visual Studio debugger to find a bug that is invisible in the output, then opening the fix in the native diff.*
 
 **Status:** community project, not affiliated with Anthropic. Visual Studio 2026 only for now. Tested against `claude` 2.1.191.
 
+**Jump to a feature:** [Native diff](#a-native-diff-with-one-approval-step) · [Drive the debugger](#a-debugger-claude-can-drive) · [Data breakpoints](#break-when-a-value-changes) · [Catch flaky tests](#catch-a-failing-test-even-the-flaky-ones) · [Semantic navigation](#read-code-the-way-the-compiler-does) · [The panel](#a-live-panel)
+
+**More:** [What you get](#what-you-get) · [Requirements](#requirements) · [Install](#install) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Privacy and security](#privacy-and-security) · [Limitations](#limitations-and-known-issues) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
+
 ## Why
 
-Claude Code ships first-class IDE integration for VS Code and JetBrains, but not Visual Studio. There is an open request for it at [anthropics/claude-code#15942](https://github.com/anthropics/claude-code/issues/15942). This extension implements that same integration protocol natively for VS, so the CLI drives a real Visual Studio diff window and reads your selection and build errors instead of you copy-pasting into a terminal.
+Claude Code ships first-class IDE integration for VS Code and JetBrains, but not Visual Studio. This extension implements that same integration protocol natively for VS, so the CLI drives a real Visual Studio diff window and reads your selection and build errors instead of you copy-pasting into a terminal.
+
+The demand for this is on the Claude Code tracker. These requests ask for what the extension provides:
+
+- **Visual Studio support:** [#15942](https://github.com/anthropics/claude-code/issues/15942) for VS 2026, and [#70516](https://github.com/anthropics/claude-code/issues/70516) for VS 2022+.
+- **A debugger Claude can use:** [#13865](https://github.com/anthropics/claude-code/issues/13865) for an interactive debug mode aimed at hard-to-reproduce runtime bugs, and [#27110](https://github.com/anthropics/claude-code/issues/27110) to expose debugger state, the variables and call stack, to Claude.
+- **Reaching more IDEs, and stronger C#/.NET code intelligence:** [#1234](https://github.com/anthropics/claude-code/issues/1234) for IDEs beyond VS Code and JetBrains, and [#16360](https://github.com/anthropics/claude-code/issues/16360) for the C# code intelligence our Roslyn navigation provides.
 
 ## What you get
 
@@ -50,7 +60,7 @@ Point Claude at a field and it stops the moment that field is written, or traces
 
 ![A conditional data breakpoint stopping the instant an order total goes negative, with the change history listed](docs/images/data-brk-conditional.png)
 
-The full data-breakpoint reference is in [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+The full data-breakpoint reference is in [`docs/DEBUGGER.md`](docs/DEBUGGER.md#break-when-a-value-changes-data-breakpoints).
 
 ### Catch a failing test, even the flaky ones
 
@@ -58,7 +68,7 @@ Claude discovers, runs, and debugs your unit tests through Visual Studio's Test 
 
 ![The Visual Studio debugger paused inside a flaky test at the throw site, with the exception live in the frame](docs/images/flaky-caught.png)
 
-Full tool list and the worked flow are in [`docs/TESTING.md`](docs/TESTING.md).
+Full tool list and the worked flow are in [`docs/TESTING.md`](docs/TESTING.md#catch-a-flaky-test-red-handed).
 
 ### Read code the way the compiler does
 
@@ -95,6 +105,8 @@ A dockable Claude Code panel shows connection status, edit decisions, and token 
 Diagnostics need a loaded project, not a loose file in Open-Folder mode, for the compiler to analyze it.
 
 To let Claude debug: set a breakpoint, tick **Allow Claude to drive debugger** in the panel, start debugging, then ask it to investigate. Reading runtime state works without the toggle. The toggle only gates driving execution. See [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
+
+For a full first-run walkthrough with screenshots, a panel tour, and troubleshooting, see [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
 
 ## How it works
 
