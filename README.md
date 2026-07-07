@@ -2,7 +2,7 @@
 
 Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026**. The `claude` CLI does the agent work. This extension is the IDE half of Claude Code's integration protocol: a native diff window with accept and reject, automatic selection and compiler-diagnostics context, a live debugger Claude can read and drive, Roslyn code navigation with decompile, and a test runner that catches failures under the debugger.
 
-![Claude sets a breakpoint in Visual Studio, steps through a scoring loop to find a bug that never shows in the output, and its fix opens in the diff viewer](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/debugger.gif)
+![Claude sets a breakpoint in Visual Studio, steps through a scoring loop to find a bug that never shows in the output, and its fix opens in the diff viewer](docs/debugger.gif)
 
 *A fresh Claude session driving the Visual Studio debugger to find a bug that is invisible in the output, then opening the fix in the native diff.*
 
@@ -32,7 +32,7 @@ A few of these are hard to picture from a bullet. Here they are running in the I
 
 Claude's edits open in Visual Studio's own diff viewer, and approving there is the only step. There is no second yes/no prompt in the terminal. You can reject an edit and leave a note, and Claude reconsiders with your feedback. A panel toggle applies edits without the diff for when you want it to run ahead, and it resets each session so it is never silently left on.
 
-![A Claude edit open in the Visual Studio diff viewer with Accept, Reject, and Reject with feedback buttons](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/diff-reject.png)
+![A Claude edit open in the Visual Studio diff viewer with Accept, Reject, and Reject with feedback buttons](docs/images/diff-reject.png)
 
 ### A debugger Claude can drive
 
@@ -40,7 +40,7 @@ While you are paused at a breakpoint, Claude reads your program's runtime state:
 
 It kept a running trace of what it saw at each round, which is how it caught the reset it was missing:
 
-![The round-by-round trace Claude built while stepping, showing the combo counter failing to reset on a zero round](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/combo-trace.png)
+![The round-by-round trace Claude built while stepping, showing the combo counter failing to reset on a zero round](docs/images/combo-trace.png)
 
 It has grown well past stepping. Claude can attach to a program that is already running (a hosted web service or a desktop app, not just F5), break at the throw site of an exception instead of the catch that swallows it, and pause a hung process to walk a deadlock back to the exact cycle. Full tool list and worked walkthroughs are in [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 
@@ -48,7 +48,7 @@ It has grown well past stepping. Claude can attach to a program that is already 
 
 Point Claude at a field and it stops the moment that field is written, or traces every value the field takes, in order. It can watch conditionally (break only when the value goes below zero, for example) and on several fields at once. Visual Studio's own UI can set this, but there is no automation API for it, so the extension arms it through a bundled debug-engine component. That makes it new ground for catching the write that corrupts your state.
 
-![A conditional data breakpoint stopping the instant an order total goes negative, with the change history listed](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/data-brk-conditional.png)
+![A conditional data breakpoint stopping the instant an order total goes negative, with the change history listed](docs/images/data-brk-conditional.png)
 
 The full data-breakpoint reference is in [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 
@@ -56,7 +56,7 @@ The full data-breakpoint reference is in [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 
 Claude discovers, runs, and debugs your unit tests through Visual Studio's Test Explorer engine. You get real per-test results (outcome, message, and stack), and after a fix it re-runs only the tests that failed. The test tools sit on top of the debugger, so a red test becomes a live investigation: Claude can launch one failing test and stop at the throw with the exception and locals in view. It can also loop a flaky test until the failing run happens and leave you paused inside that run, holding the state that caused it.
 
-![The Visual Studio debugger paused inside a flaky test at the throw site, with the exception live in the frame](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/flaky-caught.png)
+![The Visual Studio debugger paused inside a flaky test at the throw site, with the exception live in the frame](docs/images/flaky-caught.png)
 
 Full tool list and the worked flow are in [`docs/TESTING.md`](docs/TESTING.md).
 
@@ -64,7 +64,7 @@ Full tool list and the worked flow are in [`docs/TESTING.md`](docs/TESTING.md).
 
 Most assistants navigate code by searching text, which misses indirect references and over-counts on comments and same-named symbols. This gives Claude Visual Studio's resolved model of your C# (Roslyn): find-all-references, go-to-definition, find-implementations, and call and type hierarchies, resolved through interfaces, overrides, and overloads. It also reads the decompiled body of a method inside a referenced DLL, which searching your repo cannot do. Point it at a framework or NuGet call and it returns the real decompiled C#, and for core .NET types it fetches the actual runtime source via SourceLink.
 
-![Roslyn find-all-references resolving a call through an interface that a text search would miss](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/semantic-result.png)
+![Roslyn find-all-references resolving a call through an interface that a text search would miss](docs/images/semantic-result.png)
 
 It needs no debug session and works whenever a C#/VB solution is open. Details are in [`docs/SEMANTIC.md`](docs/SEMANTIC.md).
 
@@ -72,7 +72,7 @@ It needs no debug session and works whenever a C#/VB solution is open. Details a
 
 A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session.
 
-![The Claude Code panel showing the connection pill, the debugger-drive toggle, and token and cost figures](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/full-panel.png)
+![The Claude Code panel showing the connection pill, the debugger-drive toggle, and token and cost figures](docs/images/full-panel.png)
 
 ## Requirements
 
