@@ -48,9 +48,17 @@ Claude's edits open in Visual Studio's own diff viewer, and approving there is t
 
 While you are paused at a breakpoint, Claude reads your program's runtime state: the call stack, variable values, and threads. With driving turned on it also steps, sets breakpoints, and runs your code to corner a bug instead of guessing from the source. The clip above is a scoring function that returns the wrong total. Claude stopped inside the loop, stepped through the rounds, and watched a counter that should reset but did not.
 
-It kept a running trace of what it saw at each round, which is how it caught the reset it was missing:
+It kept a running trace of what it saw at each round, which is how it caught the reset it was missing. For the input `{5, 3, 0, 4, 2, 0, 6}`:
 
-![The round-by-round trace Claude built while stepping, showing the combo counter failing to reset on a zero round](docs/images/combo-trace.png)
+| round | points | combo (after) | total | should be |
+|---|---|---|---|---|
+| 0 | 5 | 1 | 5 | 5 |
+| 1 | 3 | 2 | 11 | 11 |
+| 2 | 0 | **2, stays** | 11 | 11 |
+| 3 | 4 | 3 | 23 | **15** |
+| 4 | 2 | 4 | 31 | **19** |
+| 5 | 0 | **4, stays** | 31 | 19 |
+| 6 | 6 | 5 | **61** | **25** |
 
 It has grown well past stepping. Claude can attach to a program that is already running (a hosted web service or a desktop app, not just F5), break at the throw site of an exception instead of the catch that swallows it, and pause a hung process to walk a deadlock back to the exact cycle. Full tool list and worked walkthroughs are in [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 
@@ -58,7 +66,14 @@ It has grown well past stepping. Claude can attach to a program that is already 
 
 Point Claude at a field and it stops the moment that field is written, or traces every value the field takes, in order. It can watch conditionally (break only when the value goes below zero, for example) and on several fields at once. Visual Studio's own UI can set this, but there is no automation API for it, so the extension arms it through a bundled debug-engine component. That makes it new ground for catching the write that corrupts your state.
 
-![A conditional data breakpoint stopping the instant an order total goes negative, with the change history listed](docs/images/data-brk-conditional.png)
+The plain watch records every write, so the corrupting step is obvious at a glance, and the conditional watch (`< 0`) breaks on exactly that one:
+
+| # | value (cents) | written by | |
+|---|---|---|---|
+| 1-3 | 0 → 30000 → 42000 → 54000 | `AddItems` | three line items |
+| 4 | 54000 → 48600 | `ApplyBulkDiscount` | 10% off |
+| 5 | 48600 → 52488 | `ApplyTax` | +8% tax |
+| 6 | 52488 → **-47512** | `ApplyLoyaltyCredit` | the corruption |
 
 The full data-breakpoint reference is in [`docs/DEBUGGER.md`](docs/DEBUGGER.md#break-when-a-value-changes-data-breakpoints).
 
@@ -74,7 +89,13 @@ Full tool list and the worked flow are in [`docs/TESTING.md`](docs/TESTING.md#ca
 
 Most assistants navigate code by searching text, which misses indirect references and over-counts on comments and same-named symbols. This gives Claude Visual Studio's resolved model of your C# (Roslyn): find-all-references, go-to-definition, find-implementations, and call and type hierarchies, resolved through interfaces, overrides, and overloads. It also reads the decompiled body of a method inside a referenced DLL, which searching your repo cannot do. Point it at a framework or NuGet call and it returns the real decompiled C#, and for core .NET types it fetches the actual runtime source via SourceLink.
 
-![Roslyn find-all-references resolving a call through an interface that a text search would miss](docs/images/semantic-result.png)
+| Tool | What it caught that a text search misses |
+|---|---|
+| find-implementations | `Triangle`'s **explicit** `IShape.Area`, which `.Area()` or `: IShape` never ties back to the interface |
+| type-hierarchy | `Circle` and `Square` reach `IShape` transitively through `ShapeBase`; grep on `: IShape` finds only the two direct implementers |
+| call-hierarchy | the interface-dispatched callers of `IShape.Area`, back to `Main`, that a search on the concrete `Circle.Area` would miss |
+| go-to-definition | the right `Describe` overload at a call site, not all three declarations |
+| decompile | the real body of `Enumerable.Sum` from the library, with `Math.Sqrt` falling back to SourceLink |
 
 It needs no debug session and works whenever a C#/VB solution is open. Details are in [`docs/SEMANTIC.md`](docs/SEMANTIC.md).
 
