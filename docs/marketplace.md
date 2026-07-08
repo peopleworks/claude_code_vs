@@ -36,6 +36,7 @@ The demand for this is on the Claude Code tracker. These requests ask for what t
 - **Live debugger** - while you are paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can drive the debugger: continue, step, set breakpoints, break at the throw site of an exception, set a data breakpoint that breaks (or traces the full change history) the moment a value changes, attach to a running app (a hosted web service or desktop app, not just F5), and pause a hung process to untangle a deadlock by following the lock-ownership chain across threads to the exact cycle. Full reference: [the debugger guide](https://github.com/firish/claude_code_vs/blob/main/docs/DEBUGGER.md).
 - **Test integration** - Claude discovers, runs, and debugs your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and run a failing test under the debugger to stop at the fault, or hammer a flaky test until it fails and catch that iteration red-handed, paused inside the failure. Because it is the debugger's own session, a red test becomes a live investigation. Full reference: [the testing guide](https://github.com/firish/claude_code_vs/blob/main/docs/TESTING.md).
 - **Selection context** - Claude automatically knows the file and lines you are looking at.
+- **Notifications** - an in-IDE heads-up when Claude finishes responding or needs your input (a permission prompt, or it went idle waiting for you): a notification bar in Visual Studio, plus a taskbar flash when VS is in the background. For working in another window while it cooks. A panel toggle mutes it.
 - **Live panel** - a dockable Claude Code panel: connection status, edit decisions, and token usage with estimated cost (latest call vs cumulative session).
 
 ## A closer look
@@ -114,7 +115,7 @@ This is a protocol bridge, not a re-implementation of the agent. On Launch it st
 
 - The bridge binds to **127.0.0.1 only** and validates an auth token from a lockfile on every connection. The token is never logged.
 - The extension makes no network calls and no LLM calls of its own. All AI work is the `claude` CLI, under your own authentication.
-- On Launch, it writes a few helper scripts into your workspace's `.claude/` folder and merges hook entries into `.claude/settings.json`, preserving existing content: the edit-gate hook, a token-usage reporter, a break-state hook, and a stdio shim for the `vs-debug` and `vs-semantic` MCP servers (registered in your workspace `.mcp.json`).
+- On Launch, it writes a few helper scripts into your workspace's `.claude/` folder and merges hook entries into `.claude/settings.json`, preserving existing content: the edit-gate hook, a token-usage reporter, a break-state hook, a needs-input notification hook, and a stdio shim for the `vs-debug` and `vs-semantic` MCP servers (registered in your workspace `.mcp.json`).
 - Token cost is an estimate from hardcoded per-tier prices, shown only when you click *Show est. cost*.
 
 ## Limitations and known issues

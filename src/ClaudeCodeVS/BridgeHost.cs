@@ -103,6 +103,13 @@ internal sealed class BridgeHost : IDisposable
         // Stats: the Stop hook POSTs the transcript path to /usage; we parse it for tokens/cost.
         _server.UsageHandler = UsageTracker.UpdateFromTranscriptAsync;
 
+        // Notifications: the Stop hook's /usage POST doubles as the turn-end signal ("Claude finished
+        // responding"), and the Notification hook POSTs /notify when Claude needs the user (a terminal
+        // permission prompt, or it went idle waiting for input). Both raise a main-window InfoBar +
+        // taskbar flash via the Notifier; gated by the panel's Notify toggle.
+        _server.StopReceived += Ui.Notifier.TurnEnded;
+        _server.NotifyHandler = (message, _) => { Ui.Notifier.NeedsAttention(message); return Task.CompletedTask; };
+
         // Debug awareness: the UserPromptSubmit hook POSTs to /debug-context; we read the live VS
         // debugger (break location, call stack, locals) and hand it back to be injected into context.
         _server.DebugContextHandler = GetDebugContextAsync;

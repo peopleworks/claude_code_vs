@@ -103,6 +103,21 @@ internal static class BridgeStatus
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// In-IDE notifications ("Claude finished responding" / "Claude needs your input"): the main-window
+    /// InfoBar + taskbar flash the <see cref="Notifier"/> raises from the Stop and Notification hooks.
+    /// Default ON - it's a convenience, not a safety gate - and in-memory like the other toggles, so the
+    /// panel checkbox is the whole story for a session.
+    /// </summary>
+    public static bool NotifyEnabled { get; private set; } = true;
+
+    public static void SetNotifyEnabled(bool value)
+    {
+        if (NotifyEnabled == value) return;
+        NotifyEnabled = value;
+        Changed?.Invoke();
+    }
+
     /// <summary>Set by BridgeHost so the panel's Launch button can start the CLI.</summary>
     public static Func<Task>? LaunchAction { get; set; }
 

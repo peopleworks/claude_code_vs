@@ -52,6 +52,20 @@ public sealed class IdeWebSocketServer
     public Func<string, CancellationToken, Task>? UsageHandler { get; set; }
 
     /// <summary>
+    /// Raised when the Stop hook POSTs /usage - i.e. Claude finished a turn. The usage refresh is the
+    /// payload; this event is the *signal* (BridgeHost raises the "Claude finished" notification from
+    /// it). Fired before the usage parse so a slow transcript read never delays the notification.
+    /// </summary>
+    public event Action? StopReceived;
+
+    /// <summary>
+    /// Handles a POST /notify request from the Notification hook: the CLI needs the user's attention
+    /// (a permission prompt in the terminal, or Claude went idle waiting for input). The string is the
+    /// CLI's human-readable message. Set by the VSIX; observe-only (the hook doesn't act on the reply).
+    /// </summary>
+    public Func<string, CancellationToken, Task>? NotifyHandler { get; set; }
+
+    /// <summary>
     /// Handles a POST /debug-context request from the UserPromptSubmit hook: read the current VS
     /// debugger state (break location, call stack, locals) and return it as JSON for the hook to inject
     /// into Claude's context. Set by the VSIX; null returns "unknown". This is how debug awareness
@@ -141,6 +155,12 @@ public sealed class IdeWebSocketServer
                 && ctx.Request.Url?.AbsolutePath == "/usage")
             {
                 await HandleUsageRequestAsync(ctx, ct);
+                return;
+            }
+            if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
+                && ctx.Request.Url?.AbsolutePath == "/notify")
+            {
+                await HandleNotifyRequestAsync(ctx, ct);
                 return;
             }
             if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase)
@@ -253,6 +273,9 @@ public sealed class IdeWebSocketServer
 
     private async Task HandleUsageRequestAsync(HttpListenerContext ctx, CancellationToken ct)
     {
+        // The Stop hook is the only /usage caller, so any hit here means the turn ended. Signal first -
+        // the transcript parse below can be slow and the notification shouldn't wait on it.
+        try { StopReceived?.Invoke(); } catch { }
         try
         {
             string body;
@@ -267,6 +290,26 @@ public sealed class IdeWebSocketServer
         catch (Exception e)
         {
             Log.Warn($"usage request failed: {e.Message}");
+        }
+        try { ctx.Response.StatusCode = 200; ctx.Response.Close(); } catch { /* client gave up */ }
+    }
+
+    private async Task HandleNotifyRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        try
+        {
+            string body;
+            using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+                body = await reader.ReadToEndAsync();
+            var o = JObject.Parse(body);
+            var message = (string?)o["message"] ?? "";
+            var handler = NotifyHandler;
+            if (handler != null && message.Length > 0)
+                await handler(message, ct);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"notify request failed: {e.Message}");
         }
         try { ctx.Response.StatusCode = 200; ctx.Response.Close(); } catch { /* client gave up */ }
     }
