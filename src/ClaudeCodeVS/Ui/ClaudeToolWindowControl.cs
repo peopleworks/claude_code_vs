@@ -49,6 +49,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
     private readonly TextBlock _toolsWarningText;
     private readonly CheckBox _autoAccept;
     private readonly CheckBox _allowDrive;
+    private readonly CheckBox _notify;
     private readonly ListBox _feed;
     private readonly DispatcherTimer _timer;
     private readonly StackPanel _costRow;
@@ -116,6 +117,21 @@ internal sealed class ClaudeToolWindowControl : UserControl
         _allowDrive.Unchecked += (s, e) => BridgeStatus.SetAllowDebuggerDrive(false);
         _allowDrive.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
         left.Children.Add(_allowDrive);
+
+        // Notifications: an InfoBar (+ taskbar flash when VS is in the background) when Claude finishes
+        // a turn or needs input. A convenience, not a safety gate, so unlike the two above it defaults ON.
+        _notify = new CheckBox
+        {
+            Content = "Notify",
+            ToolTip = "Show a notification bar (and flash the taskbar when VS is in the background) when Claude finishes responding or needs your input.",
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 0, 0),
+            IsChecked = BridgeStatus.NotifyEnabled,
+        };
+        _notify.Checked += (s, e) => BridgeStatus.SetNotifyEnabled(true);
+        _notify.Unchecked += (s, e) => BridgeStatus.SetNotifyEnabled(false);
+        _notify.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        left.Children.Add(_notify);
 
         toolbar.Children.Add(right);
         toolbar.Children.Add(left);
@@ -284,6 +300,8 @@ internal sealed class ClaudeToolWindowControl : UserControl
             _autoAccept.IsChecked = BridgeStatus.AutoAcceptEdits;
         if (_allowDrive.IsChecked != BridgeStatus.AllowDebuggerDrive)
             _allowDrive.IsChecked = BridgeStatus.AllowDebuggerDrive;
+        if (_notify.IsChecked != BridgeStatus.NotifyEnabled)
+            _notify.IsChecked = BridgeStatus.NotifyEnabled;
 
         // Status pill.
         if (BridgeStatus.Port is not int port)

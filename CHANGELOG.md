@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.11.0 - 2026-07-10
+
+**Notifications** — an in-IDE heads-up when Claude finishes a turn or needs your input, for anyone working in another window while it cooks.
+
+### Features
+
+- **"Claude finished responding."** — when a turn ends, an InfoBar appears across the top of the Visual Studio main window (auto-dismisses after 15s), and if VS isn't the foreground app its taskbar button flashes a few times. No new hook needed: the existing `Stop` usage hook's `/usage` POST doubles as the turn-end signal (a new `IdeWebSocketServer.StopReceived` event, raised before the transcript parse so a slow usage read never delays the notification).
+- **"Claude needs your input."** — a new `Notification` hook (`vs-notify-hook.ps1`, same bridge-discovery boilerplate as the usage hook) POSTs the CLI's message to a new `/notify` endpoint when Claude hits a terminal permission prompt or goes idle waiting for input. This one stays up until dismissed or superseded, and it lands in the panel's activity feed.
+- **A `Notify` panel toggle** mutes both. Default ON (it's a convenience, not a safety gate — unlike the two safety toggles), in-memory per session.
+
+### Fixes
+
+- **The hook/MCP installers silently dropped additions when merging into an EXISTING file.** Json.NET clones an already-parented `JToken` on re-assignment, so `root["hooks"] = hooks` detached the local reference and every subsequent mutation landed on an orphan — the file was rewritten without the new entry while the log claimed `ADDED`. Every prior rollout happened to hit the fresh-file path, so this first bit when 1.11.0 added the `Notification` hook to workspaces with an existing `settings.json`. Fixed in `PermissionHookInstaller` (both levels) and `McpInstaller` (`mcpServers` — this one mattered for marketplace upgraders with an existing `.mcp.json`): assign only when creating the token, mutate in place otherwise.
+- **The Stop hook no longer waits on the transcript parse.** `/usage` held the hook's POST open until the whole transcript was parsed, which on a long conversation could blow the CLI's 10s hook budget (the `userHookTimeout` warning). The hook is observe-only, so the bridge now responds immediately and parses in the background.
+
+### Notes
+
+- One notification at a time: a new one supersedes the previous InfoBar (`Ui/Notifier.cs`, the same `IVsInfoBarUIFactory` machinery as the diff gate, hosted on the main window via `VSSPROPID_MainWindowInfoBarHost`).
+- The taskbar flash is bounded (a few blinks, then the button stays highlighted) — deliberately *not* flash-until-focused, which would nag through a whole terminal conversation. It's skipped entirely when this VS instance is already foreground.
+- Turn-end events log at `Event` level (Output pane only) so the panel feed doesn't gain a line per turn; needs-input logs at `Info` (visible in the feed).
+
 ## 1.10.1 - 2026-07-06
 
 Two reliability fixes for the bridge.

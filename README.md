@@ -32,6 +32,7 @@ The demand for this is on the Claude Code tracker. These requests ask for what t
 - **Live debugger** - while you are paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can drive the debugger: continue, step, set breakpoints, break at the throw site of an exception, set a data breakpoint that breaks (or traces the full change history) the moment a value changes, attach to a running app (a hosted web service or desktop app, not just F5), and pause a hung process to untangle a deadlock by following the lock-ownership chain across threads to the exact cycle. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 - **Test integration** - Claude discovers, runs, and debugs your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and run a failing test under the debugger to stop at the fault, or hammer a flaky test until it fails and catch that iteration red-handed, paused inside the failure. Because it is the debugger's own session, a red test becomes a live investigation. Full reference: [`docs/TESTING.md`](docs/TESTING.md).
 - **Selection context** - Claude automatically knows the file and lines you are looking at.
+- **Notifications** - an in-IDE heads-up when Claude finishes responding or needs your input (a permission prompt, or it went idle waiting for you): a notification bar in Visual Studio, plus a taskbar flash when VS is in the background. For working in another window while it cooks. A panel toggle mutes it.
 - **Live panel** - a dockable Claude Code panel: connection status, edit decisions, and token usage with estimated cost (latest call vs cumulative session).
 
 ## A closer look
@@ -101,7 +102,7 @@ It needs no debug session and works whenever a C#/VB solution is open. Details a
 
 ### A live panel
 
-A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session.
+A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session, plus a **Notify** toggle (on by default) that mutes the finished/needs-input notifications.
 
 ![The Claude Code panel showing the connection pill, the debugger-drive toggle, and token and cost figures](docs/images/full-panel.png)
 
@@ -149,6 +150,7 @@ For debugger access it adds a `UserPromptSubmit` hook that injects live break st
   - `vs-permission-hook.ps1`, which routes Edit/Write/MultiEdit edits through the VS diff.
   - `vs-usage-hook.ps1`, which reports the transcript path so the panel can show token stats.
   - `vs-debug-context-hook.ps1`, which injects live break state into your prompt while you are paused.
+  - `vs-notify-hook.ps1`, which reports when Claude needs your input so the extension can raise an in-IDE notification.
   - `vs-mcp-shim.ps1`, the stdio bridge for the `vs-debug` and `vs-semantic` MCP servers, registered in your workspace `.mcp.json`.
 - Token cost is an estimate from hardcoded per-tier prices, shown only when you click *Show est. cost*.
 

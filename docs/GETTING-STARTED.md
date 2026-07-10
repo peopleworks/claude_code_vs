@@ -2,7 +2,7 @@
 
 The practical setup: install the extension, launch Claude connected to Visual Studio, and learn the panel and the two safety toggles. For what the tools actually do once you are connected, see [`DEBUGGER.md`](DEBUGGER.md), [`TESTING.md`](TESTING.md), and [`SEMANTIC.md`](SEMANTIC.md).
 
-**Jump to:** [Requirements](#requirements) · [Install](#install) · [First launch](#first-launch) · [The panel](#the-panel) · [The diff gate](#the-diff-gate) · [Auto-accept](#run-wild-auto-accept) · [Let Claude debug](#letting-claude-debug) · [Troubleshooting](#troubleshooting)
+**Jump to:** [Requirements](#requirements) · [Install](#install) · [First launch](#first-launch) · [The panel](#the-panel) · [The diff gate](#the-diff-gate) · [Auto-accept](#run-wild-auto-accept) · [Notifications](#notifications) · [Let Claude debug](#letting-claude-debug) · [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -41,7 +41,8 @@ The dockable Claude Code panel is your status and control surface.
 It shows:
 
 - **Connection.** The green **Connected** pill, the bridge port, and the workspace folder the CLI is bound to.
-- **The two toggles.** **Auto-accept (run wild)** and **Allow Claude to drive debugger**, both off by default and both reset each session. More on each below.
+- **The two safety toggles.** **Auto-accept (run wild)** and **Allow Claude to drive debugger**, both off by default and both reset each session. More on each below.
+- **The Notify toggle.** Mutes the in-IDE notifications ("Claude finished responding" / "Claude needs your input"). On by default, since it is a convenience rather than a safety gate. More below.
 - **Edit decisions.** How many edits you accepted and rejected this session.
 - **Debugger activity.** How many reads Claude made and how many drive commands it issued.
 - **Token usage and estimated cost.** The latest call and the running session, in and out tokens plus cached, with a **Show est. cost** toggle. Cost is an estimate from hardcoded per-tier prices, not billing.
@@ -72,6 +73,14 @@ That round-trip is the point. You steer the edit without retyping the whole requ
 ## Run wild: auto-accept
 
 The **Auto-accept (run wild)** toggle applies edits without opening the diff, for when you want to let it move fast. It is off by default and resets each session, so it is never left on silently. Turn it off to go back to reviewing each edit.
+
+---
+
+## Notifications
+
+For working in another window while Claude cooks. When a turn finishes, a notification bar appears across the top of the Visual Studio main window ("Claude finished responding.", auto-dismissing after a few seconds). When Claude needs you — a permission prompt in the terminal, or it went idle waiting for input — the bar shows the CLI's message and stays until you dismiss it. If Visual Studio is not the foreground app, its taskbar button also flashes a few times, the standard Windows "needs attention" signal.
+
+Only one notification shows at a time (a new one replaces the old), and the **Notify** toggle in the panel mutes all of it.
 
 ---
 
