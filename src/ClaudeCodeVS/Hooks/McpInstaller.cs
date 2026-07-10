@@ -59,8 +59,14 @@ internal static class McpInstaller
                 root = new JObject();
             }
 
-            var servers = root["mcpServers"] as JObject ?? new JObject();
-            root["mcpServers"] = servers;
+            // Only assign when creating: re-assigning an already-parented JToken makes Json.NET CLONE it
+            // into the parent, detaching this local reference - upserts would then never reach the file
+            // (same bug as the hook installer; matters for users upgrading with an existing .mcp.json).
+            if (root["mcpServers"] is not JObject servers)
+            {
+                servers = new JObject();
+                root["mcpServers"] = servers;
+            }
 
             bool changed = false;
             foreach (var (name, extraArgs) in Servers)

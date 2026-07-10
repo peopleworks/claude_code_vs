@@ -81,7 +81,7 @@ Details are in [the semantic-navigation guide](https://github.com/firish/claude_
 
 ### A live panel
 
-A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session.
+A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session, plus a **Notify** toggle (on by default) that mutes the finished/needs-input notifications.
 
 ![The Claude Code panel showing the connection pill, the debugger-drive toggle, and token and cost figures](https://raw.githubusercontent.com/firish/claude_code_vs/main/docs/images/full-panel.png)
 

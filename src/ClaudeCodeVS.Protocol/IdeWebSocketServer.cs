@@ -285,7 +285,16 @@ public sealed class IdeWebSocketServer
             var transcript = (string?)o["transcript_path"] ?? "";
             var handler = UsageHandler;
             if (handler != null && transcript.Length > 0)
-                await handler(transcript, ct);
+            {
+                // Fire-and-forget: the hook is observe-only (it never reads the reply), but it DOES wait
+                // for the response - holding it open while a long transcript parses can blow the CLI's
+                // hook timeout. Respond immediately; parse in the background.
+                _ = Task.Run(async () =>
+                {
+                    try { await handler(transcript, ct); }
+                    catch (Exception e) { Log.Warn($"usage transcript parse failed: {e.Message}"); }
+                }, ct);
+            }
         }
         catch (Exception e)
         {

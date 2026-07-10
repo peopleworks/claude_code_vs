@@ -60,8 +60,15 @@ internal static class PermissionHookInstaller
                 root = new JObject();
             }
 
-            var hooks = root["hooks"] as JObject ?? new JObject();
-            root["hooks"] = hooks;
+            // Only assign when creating: re-assigning an already-parented JToken makes Json.NET CLONE it
+            // into the parent, detaching this local reference - every later mutation then lands on the
+            // orphan and silently never reaches the file (bit us adding the Notification hook to
+            // workspaces with an existing settings.json).
+            if (root["hooks"] is not JObject hooks)
+            {
+                hooks = new JObject();
+                root["hooks"] = hooks;
+            }
 
             bool addedPre = EnsureHook(hooks, "PreToolUse", "Edit|Write|MultiEdit", PermissionScript, PermissionTimeoutSeconds);
             bool addedStop = EnsureHook(hooks, "Stop", matcher: null, UsageScript, UsageTimeoutSeconds);
@@ -86,8 +93,12 @@ internal static class PermissionHookInstaller
     /// <summary>Add a hook for <paramref name="eventName"/> pointing at <paramref name="script"/> if not already present. Returns true if it changed settings.</summary>
     private static bool EnsureHook(JObject hooks, string eventName, string? matcher, string script, int timeoutSeconds)
     {
-        var arr = hooks[eventName] as JArray ?? new JArray();
-        hooks[eventName] = arr;
+        // Same clone-on-reparent hazard as above: keep the existing array in place, only assign a new one.
+        if (hooks[eventName] is not JArray arr)
+        {
+            arr = new JArray();
+            hooks[eventName] = arr;
+        }
         if (AlreadyInstalled(arr, script)) return false;
 
         var entry = new JObject

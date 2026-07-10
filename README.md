@@ -102,7 +102,7 @@ It needs no debug session and works whenever a C#/VB solution is open. Details a
 
 ### A live panel
 
-A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session.
+A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session, plus a **Notify** toggle (on by default) that mutes the finished/needs-input notifications.
 
 ![The Claude Code panel showing the connection pill, the debugger-drive toggle, and token and cost figures](docs/images/full-panel.png)
 
