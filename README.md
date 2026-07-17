@@ -8,7 +8,7 @@ Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026**.
 
 **Status:** community project, not affiliated with Anthropic. Visual Studio 2026 only for now. Tested against `claude` 2.1.191.
 
-**Jump to a feature:** [Native diff](#a-native-diff-with-one-approval-step) · [Drive the debugger](#a-debugger-claude-can-drive) · [Data breakpoints](#break-when-a-value-changes) · [Catch flaky tests](#catch-a-failing-test-even-the-flaky-ones) · [Semantic navigation](#read-code-the-way-the-compiler-does) · [The panel](#a-live-panel)
+**Jump to a feature:** [Native diff](#a-native-diff-with-one-approval-step) · [Drive the debugger](#a-debugger-claude-can-drive) · [Data breakpoints](#break-when-a-value-changes) · [Catch flaky tests](#catch-a-failing-test-even-the-flaky-ones) · [Semantic navigation](#read-code-the-way-the-compiler-does) · [Attach files](#attach-a-screenshot-or-any-file) · [The panel](#a-live-panel)
 
 **More:** [What you get](#what-you-get) · [Requirements](#requirements) · [Install](#install) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Privacy and security](#privacy-and-security) · [Limitations](#limitations-and-known-issues) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
@@ -32,6 +32,7 @@ The demand for this is on the Claude Code tracker. These requests ask for what t
 - **Live debugger** - while you are paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can drive the debugger: continue, step, set breakpoints, break at the throw site of an exception, set a data breakpoint that breaks (or traces the full change history) the moment a value changes, attach to a running app (a hosted web service or desktop app, not just F5), and pause a hung process to untangle a deadlock by following the lock-ownership chain across threads to the exact cycle. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 - **Test integration** - Claude discovers, runs, and debugs your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and run a failing test under the debugger to stop at the fault, or hammer a flaky test until it fails and catch that iteration red-handed, paused inside the failure. Because it is the debugger's own session, a red test becomes a live investigation. Full reference: [`docs/TESTING.md`](docs/TESTING.md).
 - **Selection context** - Claude automatically knows the file and lines you are looking at.
+- **Attach screenshots and files** - the Windows CLI cannot take a pasted screenshot at all, so the panel is the paste point: Win+Shift+S, click **Paste** (or drop files from Explorer), and an `@` reference lands directly in the CLI's input box with the real image attached. Every attachment shows an estimated token cost *before* you send, Excel/video/archives attach too (Claude gets the path and reaches for a script), and staged copies live in a gitignored `.claude/attachments/`.
 - **Notifications** - an in-IDE heads-up when Claude finishes responding or needs your input (a permission prompt, or it went idle waiting for you): a notification bar in Visual Studio, plus a taskbar flash when VS is in the background. For working in another window while it cooks. A panel toggle mutes it.
 - **Live panel** - a dockable Claude Code panel: connection status, edit decisions, and token usage with estimated cost (latest call vs cumulative session).
 
@@ -100,6 +101,14 @@ Most assistants navigate code by searching text, which misses indirect reference
 
 It needs no debug session and works whenever a C#/VB solution is open. Details are in [`docs/SEMANTIC.md`](docs/SEMANTIC.md).
 
+### Attach a screenshot, or any file
+
+Pasting a screenshot into the Claude Code CLI on Windows silently does nothing (a [long-open upstream gap](https://github.com/anthropics/claude-code/issues/26679)), and a screenshot is not a file you can drag. The panel closes that gap: take the capture, click **Paste** (or Ctrl+V in the panel, or drop files from Explorer), and the extension stages it and pushes an `@` reference straight into the CLI's input box - the same `at_mentioned` protocol message the official VS Code plugin uses, verified to deliver the actual pixels, not just a path. You type your question around the chip and send.
+
+![The attachments tray with two staged screenshots as chips, their token estimate, and the @-mention entries in the activity feed](docs/images/upload-image.png)
+
+Every attachment shows an **estimated token cost before you send** - on the chip's tooltip, and totaled next to the tray. A full screenshot and a 4K one both land near ~1.5k tokens (the API downscales), while a tight Win+Shift+S crop costs a fraction of that, and a 2 MB JSON log announcing *≈212k tokens* is your cue to ask Claude to Grep it instead of reading it whole. Formats Claude cannot read directly (Excel, video, archives) still attach - the chip is labeled, Claude gets the path, and it reaches for a script or tool on its own. BMPs are transcoded to vision-ready PNGs automatically. Files already in your workspace are referenced in place; everything else is copied into a gitignored `.claude/attachments/` so reads never hit a permission prompt.
+
 ### A live panel
 
 A dockable Claude Code panel shows connection status, edit decisions, and token usage with an estimated cost for the latest call and the running session. It also holds the two safety toggles (apply edits without the diff, and allow Claude to drive the debugger), both off by default and both reset each session, plus a **Notify** toggle (on by default) that mutes the finished/needs-input notifications.
@@ -153,6 +162,7 @@ For debugger access it adds a `UserPromptSubmit` hook that injects live break st
   - `vs-notify-hook.ps1`, which reports when Claude needs your input so the extension can raise an in-IDE notification.
   - `vs-mcp-shim.ps1`, the stdio bridge for the `vs-debug` and `vs-semantic` MCP servers, registered in your workspace `.mcp.json`.
 - Token cost is an estimate from hardcoded per-tier prices, shown only when you click *Show est. cost*.
+- Attachments you paste or drop are staged in your workspace's `.claude/attachments/` (screenshots become PNGs there; out-of-workspace files are copied in). The folder carries its own `*` gitignore so nothing lands in your repo, staged copies are pruned after 7 days, and files already inside the workspace are referenced in place, never copied or deleted.
 
 ## Limitations and known issues
 
@@ -164,6 +174,7 @@ For debugger access it adds a `UserPromptSubmit` hook that injects live break st
 - Test integration is for managed (.NET) test projects and needs a loaded solution. Coverage works, profiling is deferred, and the debug and flaky-catch tools are opt-in behind the debugger-drive toggle. See [`docs/TESTING.md`](docs/TESTING.md).
 - Token stats refresh on edits, which is the reliable hook trigger, so a chat-only turn may not update them right away.
 - Cost figures are estimates, not billing.
+- Attachments: images read directly must be PNG/JPEG/GIF/WebP under 5 MB (bigger ones attach with a downscale note; BMPs are transcoded). Excel, video, archives and other binaries attach as paths for Claude's tools rather than direct reads. Attachment token figures are estimates.
 
 ## Troubleshooting
 
@@ -171,6 +182,7 @@ For debugger access it adds a `UserPromptSubmit` hook that injects live break st
 - **The debugger, test, or semantic tools are missing:** the panel warns when the `vs-debug` and `vs-semantic` servers did not load for a session. Relaunch Claude from the panel (or from inside the workspace folder) and approve the project MCP servers if the CLI prompts.
 - **New files land in the wrong folder:** launch from the extension, which pins the working directory to your workspace, or run `claude` from inside the repo.
 - **getDiagnostics returns nothing:** open the code as a project and confirm the error appears in the Error List.
+- **An attachment chip didn't show up in the CLI's input box:** the CLI drops the reference if it was mid-turn (or its agents view was focused) when you attached. Click the chip in the panel to send it again; chips staged before Claude connects send themselves on connect.
 - **Filing a bug:** include the **Output > Claude Code** pane contents and your `claude --version`.
 
 ## Build from source
