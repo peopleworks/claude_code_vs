@@ -3,17 +3,27 @@ using ClaudeCodeVs.Spike;
 // ---------------------------------------------------------------------------
 // Phase 0 protocol spike entry point. Three modes:
 //
-//   dotnet run --project spike                 interactive: serve + press a/r to accept/reject diffs
+//   dotnet run --project spike                 interactive: serve + a/r for diffs, m/M/t for at_mention probes
 //   dotnet run --project spike -- --self-test  automated: spin up server + run the protocol client
 //   dotnet run --project spike -- --probe-cli  launch the real `claude -p` and watch the handshake
 //
-// Flags: --auto-accept-diffs (openDiff resolves itself), --workspace <path>.
+// Flags: --auto-accept-diffs (openDiff resolves itself), --workspace <path>,
+//        --gen-attach-files (just write the at_mention probe files and exit).
 // ---------------------------------------------------------------------------
 
 bool selfTest = args.Contains("--self-test");
 bool probeCli = args.Contains("--probe-cli");
 bool autoAccept = args.Contains("--auto-accept-diffs") || selfTest || probeCli;
 string workspace = GetOption(args, "--workspace") ?? Directory.GetCurrentDirectory();
+
+// Generate the at_mention probe files (image + txt attachments) and exit - no server, no lockfile.
+// Lets a human (or a build check) validate the generated PNGs render before running the live probe.
+if (args.Contains("--gen-attach-files"))
+{
+    foreach (var f in AtMentionProbe.EnsureFiles(workspace))
+        Log.Info($"generated {f}");
+    return 0;
+}
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
@@ -59,7 +69,7 @@ try
     }
     else
     {
-        RunInteractive(decisions, lockfile.Port, cts);
+        RunInteractive(decisions, server, workspace, lockfile.Port, cts);
         await serverTask; // run until Ctrl+C
     }
 }
@@ -94,7 +104,7 @@ async Task WaitUntilListeningAsync(CancellationToken ct)
     }
 }
 
-void RunInteractive(DiffDecisions decisions, int port, CancellationTokenSource cts)
+void RunInteractive(DiffDecisions decisions, IdeWebSocketServer server, string workspace, int port, CancellationTokenSource cts)
 {
     Log.Info("");
     Log.Info("Interactive mode. The server is up and the lockfile is written.");
@@ -102,6 +112,7 @@ void RunInteractive(DiffDecisions decisions, int port, CancellationTokenSource c
     Log.Info($"    {ClaudeLauncher.ManualRunHint(port)}");
     Log.Info("When Claude proposes an edit, an openDiff will appear here.");
     Log.Info("Keys:  [a] accept diff   [r] reject diff   [q] quit");
+    Log.Info("       [m] at_mention image, relative path   [M] image, absolute path   [t] .txt control");
     Log.Info("");
 
     if (Console.IsInputRedirected)
@@ -115,15 +126,23 @@ void RunInteractive(DiffDecisions decisions, int port, CancellationTokenSource c
         while (!cts.IsCancellationRequested)
         {
             var key = Console.ReadKey(intercept: true).KeyChar;
-            switch (char.ToLowerInvariant(key))
+            switch (key) // case-SENSITIVE: 'm' and 'M' are distinct at_mention path variants
             {
-                case 'a':
+                case 'a' or 'A':
                     Log.Info(decisions.ResolveOldest(true) ? "accepted pending diff" : "no pending diff");
                     break;
-                case 'r':
+                case 'r' or 'R':
                     Log.Info(decisions.ResolveOldest(false) ? "rejected pending diff" : "no pending diff");
                     break;
-                case 'q':
+                case 'm' or 'M' or 't' or 'T':
+                    var variant = key == 'M' ? 'M' : char.ToLowerInvariant(key);
+                    _ = Task.Run(async () =>
+                    {
+                        try { await AtMentionProbe.SendAsync(server, workspace, variant, cts.Token); }
+                        catch (Exception e) { Log.Error($"at_mention probe failed: {e.Message}"); }
+                    });
+                    break;
+                case 'q' or 'Q':
                     cts.Cancel();
                     return;
             }

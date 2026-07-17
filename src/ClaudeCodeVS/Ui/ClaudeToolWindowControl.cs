@@ -1,9 +1,11 @@
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using ClaudeCodeVs.Protocol;
@@ -51,6 +53,9 @@ internal sealed class ClaudeToolWindowControl : UserControl
     private readonly CheckBox _allowDrive;
     private readonly CheckBox _notify;
     private readonly ListBox _feed;
+    private readonly WrapPanel _attachChips;
+    private readonly Button _attachClear;
+    private readonly TextBlock _attachSummary;
     private readonly DispatcherTimer _timer;
     private readonly StackPanel _costRow;
     private readonly TextBlock _costText;
@@ -64,7 +69,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
         SetResourceReference(TextBlock.ForegroundProperty, VsBrushes.ToolWindowTextKey);
 
         var root = new Grid { Margin = new Thickness(10, 8, 10, 8) };
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 7; i++)
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // feed
 
@@ -209,11 +214,64 @@ internal sealed class ClaudeToolWindowControl : UserControl
         };
         Grid.SetRow(_pendingCard, 4);
 
-        // ---- Row 5: feed label ----
-        var feedLabel = new TextBlock { Text = "ACTIVITY", FontSize = 10, FontWeight = FontWeights.SemiBold, Opacity = 0.55, Margin = new Thickness(2, 0, 0, 4) };
-        Grid.SetRow(feedLabel, 5);
+        // ---- Row 5: attachments (drop/paste target + staged chips) ----
+        // Screenshots can't be pasted into the CLI on Windows (open upstream gap), so the panel is the
+        // paste/drop point: stage the file, then push an at_mentioned so the reference lands in the
+        // CLI's composer with no path typing. Chips show what's staged; × removes, click re-mentions.
+        var attachHint = new TextBlock
+        {
+            Text = "📎  Attach — drop images/files here, or",
+            FontSize = 11.5,
+            Opacity = 0.75,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var attachHeader = new StackPanel { Orientation = Orientation.Horizontal };
+        attachHeader.Children.Add(attachHint);
+        var pasteBtn = MakeButton("Paste", PasteFromClipboard);
+        pasteBtn.Margin = new Thickness(6, 0, 6, 0);
+        pasteBtn.ToolTip = "Paste from the clipboard: a screenshot (Win+Shift+S) or copied files. Ctrl+V in the panel works too.";
+        attachHeader.Children.Add(pasteBtn);
+        _attachClear = MakeButton("Clear", Attachments.AttachmentService.Clear);
+        _attachClear.Visibility = Visibility.Collapsed;
+        attachHeader.Children.Add(_attachClear);
+        // A live "what will this cost" readout for the staged set - same estimate language as the cost row.
+        _attachSummary = new TextBlock
+        {
+            FontSize = 11.5,
+            Opacity = 0.65,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        _attachSummary.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
+        attachHeader.Children.Add(_attachSummary);
 
-        // ---- Row 6: curated activity feed ----
+        _attachChips = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+
+        var attachStack = new StackPanel();
+        attachStack.Children.Add(attachHeader);
+        attachStack.Children.Add(_attachChips);
+        var attachCard = new Border
+        {
+            Background = Chip,
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 6, 10, 6),
+            Margin = new Thickness(0, 0, 0, 8),
+            AllowDrop = true,
+            Child = attachStack,
+        };
+        attachCard.DragOver += OnAttachDragOver;
+        attachCard.Drop += OnAttachDrop;
+        Grid.SetRow(attachCard, 5);
+
+        // Ctrl+V anywhere in the panel = the Paste image button.
+        CommandBindings.Add(new CommandBinding(ApplicationCommands.Paste, (s, e) => PasteFromClipboard()));
+
+        // ---- Row 6: feed label ----
+        var feedLabel = new TextBlock { Text = "ACTIVITY", FontSize = 10, FontWeight = FontWeights.SemiBold, Opacity = 0.55, Margin = new Thickness(2, 0, 0, 4) };
+        Grid.SetRow(feedLabel, 6);
+
+        // ---- Row 7: curated activity feed ----
         _feed = new ListBox
         {
             BorderThickness = new Thickness(1),
@@ -223,13 +281,14 @@ internal sealed class ClaudeToolWindowControl : UserControl
         };
         ScrollViewer.SetHorizontalScrollBarVisibility(_feed, ScrollBarVisibility.Auto);
         _feed.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
-        Grid.SetRow(_feed, 6);
+        Grid.SetRow(_feed, 7);
 
         root.Children.Add(header);
         root.Children.Add(toolbar);
         root.Children.Add(_toolsWarningCard);
         root.Children.Add(statsCard);
         root.Children.Add(_pendingCard);
+        root.Children.Add(attachCard);
         root.Children.Add(feedLabel);
         root.Children.Add(_feed);
         Content = root;
@@ -253,11 +312,13 @@ internal sealed class ClaudeToolWindowControl : UserControl
         _wired = true;
         BridgeStatus.Logged += OnLogged;
         BridgeStatus.Changed += OnChanged;
+        Attachments.AttachmentService.Changed += OnAttachmentsChanged;
         // Re-sync from current state (we may have missed events while hidden).
         _feed.Items.Clear();
         foreach (var entry in BridgeStatus.LogSnapshot())
             AddFeedLine(entry.Level, entry.Text);
         UpdateStatus();
+        RefreshAttachments();
         _timer.Start();
     }
 
@@ -267,6 +328,7 @@ internal sealed class ClaudeToolWindowControl : UserControl
         _wired = false;
         BridgeStatus.Logged -= OnLogged;
         BridgeStatus.Changed -= OnChanged;
+        Attachments.AttachmentService.Changed -= OnAttachmentsChanged;
         _timer.Stop();
     }
 
@@ -277,6 +339,8 @@ internal sealed class ClaudeToolWindowControl : UserControl
         => _ = Dispatcher.BeginInvoke(new Action(() => AddFeedLine(level, line)));
 
     private void OnChanged() => _ = Dispatcher.BeginInvoke(new Action(UpdateStatus));
+
+    private void OnAttachmentsChanged() => _ = Dispatcher.BeginInvoke(new Action(RefreshAttachments));
 #pragma warning restore VSTHRD001
 
     private void AddFeedLine(LogLevel level, string text)
@@ -389,6 +453,143 @@ internal sealed class ClaudeToolWindowControl : UserControl
     {
         _showCost = !_showCost;
         UpdateStatus();
+    }
+
+    // ---- Attachments: drop/paste -> stage -> at_mentioned chip in the CLI composer ----
+
+    private static void OnAttachDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.Bitmap)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnAttachDrop(object sender, DragEventArgs e)
+    {
+        try
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (paths is { Length: > 0 })
+                    _ = Task.Run(() => Attachments.AttachmentService.StageFilesAsync(paths));
+            }
+            else if (e.Data.GetDataPresent(DataFormats.Bitmap) && e.Data.GetData(DataFormats.Bitmap) is BitmapSource bmp)
+            {
+                // Encode on the UI thread (BitmapSource is thread-affine); file IO + send hop off it.
+                var png = EncodePng(bmp);
+                _ = Task.Run(() => Attachments.AttachmentService.StageImageBytesAsync(png));
+            }
+            e.Handled = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"attach: drop failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>The panel is the paste point for screenshots - the CLI can't take them on Windows.</summary>
+    private void PasteFromClipboard()
+    {
+        try
+        {
+            if (Clipboard.ContainsImage() && Clipboard.GetImage() is BitmapSource bmp)
+            {
+                var png = EncodePng(bmp);
+                _ = Task.Run(() => Attachments.AttachmentService.StageImageBytesAsync(png));
+            }
+            else if (Clipboard.ContainsFileDropList())
+            {
+                var paths = new System.Collections.Generic.List<string>();
+                foreach (var p in Clipboard.GetFileDropList())
+                    if (!string.IsNullOrEmpty(p)) paths.Add(p!);
+                if (paths.Count > 0)
+                    _ = Task.Run(() => Attachments.AttachmentService.StageFilesAsync(paths));
+            }
+            else
+            {
+                Log.Warn("attach: clipboard has no image or files - take a screenshot (Win+Shift+S) or copy files first.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"attach: paste failed: {ex.Message}");
+        }
+    }
+
+    private static byte[] EncodePng(BitmapSource bmp)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bmp));
+        using var ms = new System.IO.MemoryStream();
+        encoder.Save(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>Re-render the staged-attachment chips (called on the dispatcher via OnAttachmentsChanged).</summary>
+    private void RefreshAttachments()
+    {
+        var items = Attachments.AttachmentService.Snapshot();
+        _attachChips.Children.Clear();
+        _attachChips.Visibility = items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        _attachClear.Visibility = items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
+        // Tray total: the estimated token cost of reading everything staged (images by Anthropic's
+        // (w×h)/750 formula, text by bytes/4). "+" flags items with no estimate (e.g. PDFs).
+        long estSum = 0;
+        bool estPartial = false;
+        foreach (var i in items)
+        {
+            if (i.EstTokens is long t) estSum += t; else estPartial = true;
+        }
+        _attachSummary.Visibility = items.Count > 0 && estSum > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (estSum > 0)
+            _attachSummary.Text = $"≈ {Tok(estSum)}{(estPartial ? "+" : "")} tok when read";
+
+        foreach (var item in items)
+        {
+            var it = item; // capture per chip
+            var est = it.EstTokens is long e ? $"\n≈ {Tok(e)} tokens when read (estimate)" : "";
+            var toolNote = it.NeedsTool ? "\nNot a format Claude reads directly - it will use a script/tool on it." : "";
+            var name = new TextBlock
+            {
+                Text = (it.IsImage ? "🖼 " : it.NeedsTool ? "🧰 " : "📄 ") + it.FileName + (it.Sent ? "" : "  ⏳"),
+                FontSize = 11.5,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = it.MentionPath + est + toolNote + (it.Sent
+                    ? "\nClick to @-mention it again."
+                    : "\nStaged - sends when Claude connects. Click to retry."),
+            };
+            name.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            name.MouseLeftButtonUp += (s, e) => _ = Task.Run(() => Attachments.AttachmentService.ResendAsync(it));
+
+            var close = new TextBlock
+            {
+                Text = "✕",
+                FontSize = 11.5,
+                Margin = new Thickness(7, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                Opacity = 0.65,
+                ToolTip = it.WasCopied ? "Remove (deletes the staged copy)" : "Remove from the tray",
+            };
+            close.SetResourceReference(ForegroundProperty, VsBrushes.ToolWindowTextKey);
+            close.MouseLeftButtonUp += (s, e) => Attachments.AttachmentService.Remove(it);
+
+            var inner = new StackPanel { Orientation = Orientation.Horizontal };
+            inner.Children.Add(name);
+            inner.Children.Add(close);
+            _attachChips.Children.Add(new Border
+            {
+                Background = Chip,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(7, 2, 7, 2),
+                Margin = new Thickness(0, 0, 6, 4),
+                Child = inner,
+            });
+        }
     }
 
     private static string Workspace()

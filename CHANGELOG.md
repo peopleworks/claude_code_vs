@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.12.0 - 2026-07-17
+
+**Attachments** — paste a screenshot or drop files onto the panel and an `@` reference lands directly in the CLI's input box. Closes the gap where the Windows CLI cannot paste images at all (upstream anthropics/claude-code#26679) and nobody wants to type absolute paths.
+
+### Features
+
+- **Attach tray on the panel** — drop files from Explorer, or **Paste** / Ctrl+V for clipboard screenshots (saved as PNGs) and copied files. Staged items render as chips: click to @-mention again (the recovery for the CLI dropping references sent mid-turn), ✕ removes (deletes our staged copy, never an in-place original), Clear empties. Items attached before Claude connects show ⏳ and flush on connect (200 ms settle, 25 ms spacing — claudecode.nvim's proven pacing).
+- **Delivery is the IDE protocol's `at_mentioned` notification** (`{filePath, lineStart?, lineEnd?}`, insert-not-submit) — the message behind the official plugins' Alt+K. Spike-verified against the live CLI before building: an at-mentioned image path delivers **real pixels** to the model; workspace-relative and absolute paths both resolve. The spike harness gained `m`/`M`/`t` hotkeys + a probe-file generator (`--gen-attach-files`) so this stays regression-testable on CLI bumps, and its manual-connect hint now prints the PowerShell `$env:` form on Windows.
+- **Token estimates before you send** — each chip's tooltip and a tray total show what reading the attachments will roughly cost (images by Anthropic's (w×h)/750 formula after the 1568 px downscale, so ~1.6k max per image; text at ~4 bytes/token; PDFs honestly show no estimate). Makes "crop your screenshot" and "have Claude grep the big log instead of reading it" visible before the tokens are spent.
+- **One framework for every format.** Images (≤5 MB) / PDFs / text are read directly. BMPs transcode to vision-ready PNGs automatically. Everything else — Excel, video, archives — still stages and mentions, labeled 🧰: Claude gets the path and reaches for a script/tool (PowerShell, ffmpeg, …) since Read can't parse them. Oversized images attach with a downscale note; out-of-workspace files over 50 MB are @-mentioned in place instead of copied.
+- **Staging that stays out of your way** — in-workspace files are referenced in place; screenshots and out-of-workspace files are copied to `<workspace>\.claude\attachments\` (so reads never hit an out-of-project permission prompt) behind a self-ignoring `*` gitignore, pruned after 7 days.
+
 ## 1.11.0 - 2026-07-10
 
 **Notifications** — an in-IDE heads-up when Claude finishes a turn or needs your input, for anyone working in another window while it cooks.

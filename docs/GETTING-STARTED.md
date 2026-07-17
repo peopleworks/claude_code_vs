@@ -2,7 +2,7 @@
 
 The practical setup: install the extension, launch Claude connected to Visual Studio, and learn the panel and the two safety toggles. For what the tools actually do once you are connected, see [`DEBUGGER.md`](DEBUGGER.md), [`TESTING.md`](TESTING.md), and [`SEMANTIC.md`](SEMANTIC.md).
 
-**Jump to:** [Requirements](#requirements) · [Install](#install) · [First launch](#first-launch) · [The panel](#the-panel) · [The diff gate](#the-diff-gate) · [Auto-accept](#run-wild-auto-accept) · [Notifications](#notifications) · [Let Claude debug](#letting-claude-debug) · [Troubleshooting](#troubleshooting)
+**Jump to:** [Requirements](#requirements) · [Install](#install) · [First launch](#first-launch) · [The panel](#the-panel) · [The diff gate](#the-diff-gate) · [Auto-accept](#run-wild-auto-accept) · [Attachments](#attachments-screenshots-and-files) · [Notifications](#notifications) · [Let Claude debug](#letting-claude-debug) · [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -76,6 +76,26 @@ The **Auto-accept (run wild)** toggle applies edits without opening the diff, fo
 
 ---
 
+## Attachments: screenshots and files
+
+The terminal CLI cannot take a pasted screenshot on Windows (Ctrl+V of a Win+Shift+S capture silently does nothing), and pointing it at files means typing absolute paths. The panel's attach tray covers both. Three ways in:
+
+- **Drop** one or more files from Explorer onto the *"📎 Attach"* card.
+- **Paste**: take a screenshot (Win+Shift+S), then click **Paste** - it also takes files you copied in Explorer.
+- **Ctrl+V** anywhere in the panel does the same as the button.
+
+Each attachment becomes a chip in the tray, and an `@` reference is pushed straight into the CLI's input box - you will see it appear in the terminal, ready for you to type your question around it and send. Screenshots are saved as PNGs (and the model receives the actual image, not a path guess). Chips stay until you remove them: **click a chip** to @-mention it again (the recovery if you attached while Claude was mid-turn and the reference got dropped), **✕** removes one (deleting our staged copy - files already in your workspace are referenced in place and never touched), **Clear** empties the tray. Anything attached before Claude connects shows ⏳ and sends itself the moment it does.
+
+**The token estimate is the part worth watching.** Chip tooltips and the tray header show what reading the attachment will roughly cost, before you send:
+
+![The attachments tray showing a staged JSON log with an estimated 212.6k-token cost - a nudge to have Claude grep it instead of reading it whole](images/upload-json.png)
+
+A tight screenshot crop costs a fraction of a full screen (the API downscales big images, so cropping is the only real lever), and a log file announcing *≈212k tokens* is your cue to ask Claude to search it rather than read it whole - it can Grep the staged file directly.
+
+Formats behave three ways: **images (PNG/JPEG/GIF/WebP, ≤5 MB) and PDFs and text files** are read directly; **BMPs** are transcoded to PNG automatically; **everything else** (Excel, video, archives...) still attaches, labeled 🧰 - Claude gets the path and uses a script or tool on it instead of a direct read. Staged copies live in your workspace's `.claude/attachments/` behind a `*` gitignore and are pruned after 7 days.
+
+---
+
 ## Notifications
 
 For working in another window while Claude cooks. When a turn finishes, a notification bar appears across the top of the Visual Studio main window ("Claude finished responding.", auto-dismissing after a few seconds). When Claude needs you — a permission prompt in the terminal, or it went idle waiting for input — the bar shows the CLI's message and stays until you dismiss it. If Visual Studio is not the foreground app, its taskbar button also flashes a few times, the standard Windows "needs attention" signal.
@@ -104,4 +124,5 @@ The same toggle gates the test tools that launch the debugger, `vs_debug_test` a
 - **The debugger, test, or semantic tools are missing.** The panel warns when the `vs-debug` and `vs-semantic` servers did not load for a session. That happens when Claude was launched outside the workspace folder, or the project MCP servers were not approved. Relaunch from the panel, which pins the working directory, and approve the project MCP servers if the CLI prompts.
 - **New files land in the wrong folder.** Launch from the extension, which pins the working directory to your workspace, or run `claude` from inside the repo.
 - **`getDiagnostics` returns nothing.** Open the code as a project and confirm the error appears in the Error List. Loose files in Open-Folder mode have no compiler analysis.
+- **An attachment chip didn't show up in the CLI's input box.** The CLI drops the reference if it was mid-turn (or its agents view was focused) when you attached. Click the chip in the panel to send it again.
 - **Filing a bug.** Include the **Output > Claude Code** pane contents and your `claude --version`.
