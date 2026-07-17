@@ -29,9 +29,12 @@ internal static class ClaudeLauncher
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    /// <summary>A copy/paste line so the user can run an interactive session against this server.</summary>
+    /// <summary>A copy/paste line so the user can run an interactive session against this server.
+    /// Shell-specific: the POSIX `VAR=x cmd` prefix form doesn't exist in PowerShell.</summary>
     public static string ManualRunHint(int port)
-        => $"{EnableEnv}=true {PortEnv}={port} claude    # then type:  /ide";
+        => OperatingSystem.IsWindows()
+            ? $"$env:{EnableEnv}='true'; $env:{PortEnv}='{port}'; claude    # auto-connects; /ide if not"
+            : $"{EnableEnv}=true {PortEnv}={port} claude    # auto-connects; /ide if not";
 
     /// <summary>
     /// Headless probe: run `claude -p "<prompt>"` with IDE integration enabled and output captured.

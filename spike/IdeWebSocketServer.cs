@@ -194,6 +194,9 @@ internal sealed class IdeWebSocketServer
         return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
     }
 
+    /// <summary>True when at least one CLI client is connected (lets probes warn instead of no-op).</summary>
+    public bool HasClients => !_connections.IsEmpty;
+
     /// <summary>Push a JSON-RPC notification (no id) to every connected client, e.g. selection_changed.</summary>
     public async Task BroadcastNotificationAsync(string method, JsonNode @params, CancellationToken ct)
     {
