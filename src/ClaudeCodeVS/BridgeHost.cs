@@ -75,6 +75,10 @@ internal sealed class BridgeHost : IDisposable
         // Let the selection tracker push selection_changed over this server.
         Editor.SelectionService.Attach(_server, ThreadHelper.JoinableTaskFactory);
 
+        // Attachment tray: the panel's drop/paste target stages files and pushes at_mentioned over
+        // this server, so the reference lands in the CLI's composer (unsent items flush on connect).
+        Attachments.AttachmentService.Attach(_server);
+
         // Reflect CLI connect/disconnect in the dockable panel. On a FULL disconnect (no clients left),
         // reject + close any orphaned diffs: their openDiff/permission caller is gone, so the parked
         // decision would never be delivered and the diff frame + InfoBar would linger. We deliberately
