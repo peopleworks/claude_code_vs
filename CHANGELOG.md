@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.0 - 2026-07-22
+
+**Native terminal launch** — "Launch Claude Code" now opens `claude` inside VS's own docked Terminal tool window (the engine behind `View > Terminal`) instead of a separate `cmd.exe` console, so the CLI lives inside the IDE window like Developer PowerShell does.
+
+### Features
+
+- **`ITerminalService.CreateTerminalWindowAsync`, not a hand-rolled terminal.** VS 2026 exposes the real ConPTY-backed terminal engine as a public, ServiceHub-brokered service — undocumented (no NuGet package, no Learn page) but genuinely public types. Reached the same way this codebase already reaches VS's internal TestWindow engine (`Testing/TestRunner.cs`): reflection-load `Microsoft.VisualStudio.Terminal.dll` from the install dir at runtime, ship zero of its DLLs in the `.vsix`. The brokered-service plumbing itself (`IBrokeredServiceContainer`/`IServiceBroker`/`ServiceRpcDescriptor`) is a normal compile-time reference — already a transitive dependency of the VS SDK package. New: `Terminal/VsTerminalLauncher.cs`.
+- **`claude`'s env vars are baked into the launch command**, since `TerminalWindowOptions`/`ProfileConfig` expose no `EnvironmentVariables` property: `cmd.exe /K set ENABLE_IDE_INTEGRATION=true&&set CLAUDE_CODE_SSE_PORT=<port>&&claude`, same `/K` trick as before so the tab keeps its scrollback after `claude` exits. The profile has to be registered via `ITerminalService.AddCachedProfile` first — without it, `TerminalWindowOptions.Profile` is silently ignored and the terminal opens with the default shell instead.
+- **Falls back to the external `cmd.exe` console on any failure.** This is an undocumented surface that could change or vanish across a VS update, so `BridgeHost.LaunchClaudeAsync` tries the native terminal first and only falls through to today's `Process.Start(cmd.exe)` path if anything about the reflection call fails — logged via `Log.Warn`, never silent.
+
 ## 1.12.0 - 2026-07-17
 
 **Attachments** — paste a screenshot or drop files onto the panel and an `@` reference lands directly in the CLI's input box. Closes the gap where the Windows CLI cannot paste images at all (upstream anthropics/claude-code#26679) and nobody wants to type absolute paths.

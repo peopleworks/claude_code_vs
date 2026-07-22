@@ -489,6 +489,12 @@ internal sealed class BridgeHost : IDisposable
             Hooks.McpInstaller.EnsureInstalled(workspace!);
         }
 
+        // Prefer VS's own native Terminal tool window (undocumented, no NuGet package - see
+        // Terminal/VsTerminalLauncher.cs). TryLaunchAsync never throws; on ANY failure it logs via
+        // Log.Warn and returns false, so the external cmd.exe console below is always the safety net.
+        if (await Terminal.VsTerminalLauncher.TryLaunchAsync(workspace, _lockfile.Port, _cts.Token))
+            return;
+
         // Launch in DEFAULT permission mode. We tried --permission-mode acceptEdits to drop the CLI's
         // terminal edit-prompt, but verified it makes the CLI auto-apply edits and NOT call openDiff at
         // all - i.e. it kills our diff (the whole point). In the interactive-terminal model the diff and

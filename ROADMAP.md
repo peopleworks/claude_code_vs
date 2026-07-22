@@ -56,11 +56,13 @@ Both failure modes below are now fixed: orphaned `openDiff` diffs are rejected a
 
 ---
 
-## Phase 4 - Embedded chat (defer)
+## Phase 4 - Embedded chat (partially shipped 1.13.0)
 
 **What:** hosting the `claude` terminal/chat inside a VS tool window (Phase 3b in the original build plan). This would let the extension own stdin, enabling "Reject -> type reason inline" without a separate dialog, and eliminating the external console window.
 
-**Why it's deferred:** `dliedke/ClaudeCodeExtension` burned ~150 commits on paste/focus/encoding/resize trying this. The env-var handoff (the current model) is the clean separation - chat lives in an external console, diffs and context light up natively in VS.
+**Eliminating the external console window - ✅ SHIPPED 1.13.0**, via a different route than originally planned: not a hand-rolled ConPTY + custom control (the path `dliedke/ClaudeCodeExtension` burned ~150 commits on for paste/focus/encoding/resize), but VS 2026's own native terminal engine (`Microsoft.VisualStudio.Terminal.ITerminalService`, the thing behind `View > Terminal`) - undocumented, no NuGet package, reached the same way this codebase reaches VS's internal TestWindow engine (reflection-load from the install dir, see `Terminal/VsTerminalLauncher.cs`). `claude` now runs in a docked Terminal tab instead of a separate `cmd.exe` window, with the external console kept only as a fallback if the reflection call ever fails.
+
+**Still not done: owning stdin for "Reject -> type reason inline."** `CreateTerminalWindowAsync` hands back a `Guid`, not an `IPty`/stream handle - the extension doesn't get programmatic read/write access to the terminal's input or output this way. That would need a different call (`ITerminalService.CreatePtyAsync` / `CreateTerminalRendererAsync`, seen but not used in the reflection dump) and is a separate, larger piece of work if ever pursued.
 
 ---
 
