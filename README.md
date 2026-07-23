@@ -8,7 +8,7 @@ Bring [Claude Code](https://claude.com/claude-code) into **Visual Studio 2026**.
 
 **Status:** community project, not affiliated with Anthropic. Visual Studio 2026 only for now. Tested against `claude` 2.1.191.
 
-**Jump to a feature:** [Native diff](#a-native-diff-with-one-approval-step) · [Drive the debugger](#a-debugger-claude-can-drive) · [Data breakpoints](#break-when-a-value-changes) · [Catch flaky tests](#catch-a-failing-test-even-the-flaky-ones) · [Semantic navigation](#read-code-the-way-the-compiler-does) · [Attach files](#attach-a-screenshot-or-any-file) · [The panel](#a-live-panel)
+**Jump to a feature:** [Native diff](#a-native-diff-with-one-approval-step) · [Drive the debugger](#a-debugger-claude-can-drive) · [Data breakpoints](#break-when-a-value-changes) · [Catch flaky tests](#catch-a-failing-test-even-the-flaky-ones) · [Semantic navigation](#read-code-the-way-the-compiler-does) · [Integrated terminal](#claude-in-the-ides-own-terminal) · [Attach files](#attach-a-screenshot-or-any-file) · [The panel](#a-live-panel)
 
 **More:** [What you get](#what-you-get) · [Requirements](#requirements) · [Install](#install) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Privacy and security](#privacy-and-security) · [Limitations](#limitations-and-known-issues) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
@@ -32,8 +32,9 @@ The demand for this is on the Claude Code tracker. These requests ask for what t
 - **Live debugger** - while you are paused at a breakpoint, Claude sees your program's runtime state (call stack, variable values, threads) and, opt-in, can drive the debugger: continue, step, set breakpoints, break at the throw site of an exception, set a data breakpoint that breaks (or traces the full change history) the moment a value changes, attach to a running app (a hosted web service or desktop app, not just F5), and pause a hung process to untangle a deadlock by following the lock-ownership chain across threads to the exact cycle. Full reference: [`docs/DEBUGGER.md`](docs/DEBUGGER.md).
 - **Test integration** - Claude discovers, runs, and debugs your unit tests through Visual Studio's Test Explorer engine: real per-test results (outcome, message, stack), re-run just the failures, and run a failing test under the debugger to stop at the fault, or hammer a flaky test until it fails and catch that iteration red-handed, paused inside the failure. Because it is the debugger's own session, a red test becomes a live investigation. Full reference: [`docs/TESTING.md`](docs/TESTING.md).
 - **Selection context** - Claude automatically knows the file and lines you are looking at.
-- **Attach screenshots and files** - the Windows CLI cannot take a pasted screenshot at all, so the panel is the paste point: Win+Shift+S, click **Paste** (or drop files from Explorer), and an `@` reference lands directly in the CLI's input box with the real image attached. Every attachment shows an estimated token cost *before* you send, Excel/video/archives attach too (Claude gets the path and reaches for a script), and staged copies live in a gitignored `.claude/attachments/`.
-- **Notifications** - an in-IDE heads-up when Claude finishes responding or needs your input (a permission prompt, or it went idle waiting for you): a notification bar in Visual Studio, plus a taskbar flash when VS is in the background. For working in another window while it cooks. A panel toggle mutes it.
+- **Claude in the IDE's own terminal** - Launch opens `claude` inside Visual Studio's docked Terminal tool window (the same group as Developer PowerShell), already connected - it docks and tabs like any other VS terminal instead of floating over your desktop. An **External console** button keeps the standalone-window option. Full reference: [`docs/QOL.md`](docs/QOL.md#claude-in-the-ides-own-terminal).
+- **Attach screenshots and files** - the Windows CLI cannot take a pasted screenshot at all, so the panel is the paste point: Win+Shift+S, click **Paste** (or drop files from Explorer), and an `@` reference lands directly in the CLI's input box with the real image attached. Every attachment shows an estimated token cost *before* you send, Excel/video/archives attach too (Claude gets the path and reaches for a script), and staged copies live in a gitignored `.claude/attachments/`. Full reference: [`docs/QOL.md`](docs/QOL.md#attach-a-screenshot-or-any-file).
+- **Notifications** - an in-IDE heads-up when Claude finishes responding or needs your input (a permission prompt, or it went idle waiting for you): a notification bar in Visual Studio, plus a taskbar flash when VS is in the background. For working in another window while it cooks. A panel toggle mutes it. Full reference: [`docs/QOL.md`](docs/QOL.md#notifications).
 - **Live panel** - a dockable Claude Code panel: connection status, edit decisions, and token usage with estimated cost (latest call vs cumulative session).
 
 ## A closer look
@@ -101,6 +102,12 @@ Most assistants navigate code by searching text, which misses indirect reference
 
 It needs no debug session and works whenever a C#/VB solution is open. Details are in [`docs/SEMANTIC.md`](docs/SEMANTIC.md).
 
+### Claude in the IDE's own terminal
+
+`claude` runs inside Visual Studio's docked **Terminal** tool window - the same terminal group as Developer PowerShell - instead of a separate console floating over your desktop. Under the hood this is VS 2026's own terminal engine, reached through an undocumented service, so the launch is guarded: any failure or stall falls back to the classic external console automatically. Prefer the standalone window anyway (a second monitor, or a session that survives closing VS)? The **External console** button next to Launch does exactly that. Details and known quirks: [`docs/QOL.md`](docs/QOL.md#claude-in-the-ides-own-terminal).
+
+![Claude Code running inside Visual Studio's docked Terminal tool window, in a tab group alongside Developer PowerShell](docs/images/integrated-terminal.png)
+
 ### Attach a screenshot, or any file
 
 Pasting a screenshot into the Claude Code CLI on Windows silently does nothing (a [long-open upstream gap](https://github.com/anthropics/claude-code/issues/26679)), and a screenshot is not a file you can drag. The panel closes that gap: take the capture, click **Paste** (or Ctrl+V in the panel, or drop files from Explorer), and the extension stages it and pushes an `@` reference straight into the CLI's input box - the same `at_mentioned` protocol message the official VS Code plugin uses, verified to deliver the actual pixels, not just a path. You type your question around the chip and send.
@@ -130,7 +137,7 @@ A dockable Claude Code panel shows connection status, edit decisions, and token 
 
 1. Open your project or solution in Visual Studio 2026.
 2. Open the **Claude Code** panel (**View > Other Windows > Claude Code**) and click **Launch Claude Code**. It is also on the **Tools** menu.
-3. A terminal opens running `claude`, already connected to the IDE, so you do not need `/ide`. The panel pill turns green and reads **Connected**.
+3. `claude` opens in Visual Studio's docked **Terminal** window, already connected to the IDE, so you do not need `/ide`. The panel pill turns green and reads **Connected**. (Want a standalone window instead? Click **External console**.)
 4. Ask Claude to make a change. Its edit opens as a diff, and you click **Accept**, **Reject**, or **Reject with feedback**.
 
 Diagnostics need a loaded project, not a loose file in Open-Folder mode, for the compiler to analyze it.
@@ -182,6 +189,8 @@ For debugger access it adds a `UserPromptSubmit` hook that injects live break st
 - **The debugger, test, or semantic tools are missing:** the panel warns when the `vs-debug` and `vs-semantic` servers did not load for a session. Relaunch Claude from the panel (or from inside the workspace folder) and approve the project MCP servers if the CLI prompts.
 - **New files land in the wrong folder:** launch from the extension, which pins the working directory to your workspace, or run `claude` from inside the repo.
 - **getDiagnostics returns nothing:** open the code as a project and confirm the error appears in the Error List.
+- **`claude` opened in a separate console instead of the docked terminal:** the native terminal path failed or timed out and fell back (by design - the reason is in **Output > Claude Code**). Everything still works.
+- **The Claude Code terminal tab turned into Developer PowerShell after restarting VS:** expected - VS restores terminal tabs with the default shell, and the old session's port would be stale anyway. Close the leftover tab and click **Launch Claude Code** again.
 - **An attachment chip didn't show up in the CLI's input box:** the CLI drops the reference if it was mid-turn (or its agents view was focused) when you attached. Click the chip in the panel to send it again; chips staged before Claude connects send themselves on connect.
 - **Filing a bug:** include the **Output > Claude Code** pane contents and your `claude --version`.
 
