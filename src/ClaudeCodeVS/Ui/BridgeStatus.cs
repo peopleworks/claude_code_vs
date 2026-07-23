@@ -121,6 +121,10 @@ internal static class BridgeStatus
     /// <summary>Set by BridgeHost so the panel's Launch button can start the CLI.</summary>
     public static Func<Task>? LaunchAction { get; set; }
 
+    /// <summary>Set by BridgeHost: start the CLI in a standalone external console (skips the docked native
+    /// terminal - for users who want claude in its own window, or one that survives closing VS).</summary>
+    public static Func<Task>? LaunchExternalAction { get; set; }
+
     /// <summary>Set by BridgeHost so the panel can bring the verbose Output pane forward (UI thread).</summary>
     public static Action? ShowOutputAction { get; set; }
 

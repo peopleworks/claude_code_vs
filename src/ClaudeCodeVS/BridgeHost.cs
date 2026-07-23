@@ -54,7 +54,8 @@ internal sealed class BridgeHost : IDisposable
         _log = await VsOutputLog.CreateAsync(AsyncServiceProvider.GlobalProvider);
         var pane = _log;
         Log.Sink = (level, msg) => { pane.WriteLine(level, msg); Ui.BridgeStatus.Append(level, msg); };
-        Ui.BridgeStatus.LaunchAction = LaunchClaudeAsync;
+        Ui.BridgeStatus.LaunchAction = () => LaunchClaudeAsync();
+        Ui.BridgeStatus.LaunchExternalAction = () => LaunchClaudeAsync(forceExternal: true);
         Ui.BridgeStatus.ShowOutputAction = () => pane.Activate(); // panel's "Output" button (UI thread)
         Log.Info("Claude Code bridge starting…");
 
@@ -465,8 +466,10 @@ internal sealed class BridgeHost : IDisposable
     /// T1 - launch the CLI in a terminal pre-wired to this bridge: a new console with
     /// ENABLE_IDE_INTEGRATION + CLAUDE_CODE_SSE_PORT set and the working directory pinned to the
     /// workspace root, so the CLI auto-connects (no /ide) and writes files into the right repo (fixes B2).
+    /// Prefers VS's native docked Terminal; <paramref name="forceExternal"/> skips it for users who want
+    /// a standalone console window (which, unlike the docked tab, survives closing VS).
     /// </summary>
-    public async Task LaunchClaudeAsync()
+    public async Task LaunchClaudeAsync(bool forceExternal = false)
     {
         if (_lockfile is null)
         {
@@ -492,7 +495,8 @@ internal sealed class BridgeHost : IDisposable
         // Prefer VS's own native Terminal tool window (undocumented, no NuGet package - see
         // Terminal/VsTerminalLauncher.cs). TryLaunchAsync never throws; on ANY failure it logs via
         // Log.Warn and returns false, so the external cmd.exe console below is always the safety net.
-        if (await Terminal.VsTerminalLauncher.TryLaunchAsync(workspace, _lockfile.Port, _cts.Token))
+        if (!forceExternal &&
+            await Terminal.VsTerminalLauncher.TryLaunchAsync(workspace, _lockfile.Port, _cts.Token))
             return;
 
         // Launch in DEFAULT permission mode. We tried --permission-mode acceptEdits to drop the CLI's
