@@ -25,7 +25,7 @@ The practical setup: install the extension, launch Claude connected to Visual St
 
 1. Open your project or solution in Visual Studio 2026. Diagnostics and the semantic tools need a loaded project, not a loose file in Open-Folder mode.
 2. Open the **Claude Code** panel from **View > Other Windows > Claude Code**. It is also on the **Tools** menu.
-3. Click **Launch Claude Code**. A terminal opens running `claude`, already connected to the IDE, so you do not need `/ide`. The panel pill turns green and reads **Connected**.
+3. Click **Launch Claude Code**. `claude` opens in Visual Studio's docked **Terminal** window, already connected to the IDE, so you do not need `/ide`. The panel pill turns green and reads **Connected**. (Prefer a standalone window - say, on a second monitor, or one that survives closing VS? Click **External console** instead. Quirks and details: [`QOL.md`](QOL.md#claude-in-the-ides-own-terminal).)
 4. Ask Claude to make a change. Its edit opens as a diff.
 
 On Launch, the extension writes a few helper scripts into your workspace's `.claude/` folder and registers the `vs-debug` and `vs-semantic` MCP servers in your `.mcp.json`, preserving anything already there. The full list is in the README's [Privacy and security](../README.md#privacy-and-security) section.

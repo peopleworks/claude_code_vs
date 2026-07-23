@@ -97,6 +97,9 @@ internal sealed class ClaudeToolWindowControl : UserControl
 
         var left = new StackPanel { Orientation = Orientation.Horizontal };
         left.Children.Add(MakeButton("Launch Claude Code", () => { _ = BridgeStatus.LaunchAction?.Invoke(); }));
+        var launchExternal = MakeButton("External console", () => { _ = BridgeStatus.LaunchExternalAction?.Invoke(); });
+        launchExternal.ToolTip = "Launch Claude Code in a separate console window instead of the docked terminal. Unlike the docked tab, it survives closing Visual Studio.";
+        left.Children.Add(launchExternal);
         _autoAccept = new CheckBox
         {
             Content = "Auto-accept (run wild)",

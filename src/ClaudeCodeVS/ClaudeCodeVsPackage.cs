@@ -53,7 +53,7 @@ public sealed class ClaudeCodeVsPackage : AsyncPackage
     {
         var host = _host;
         if (host is null) return;
-        JoinableTaskFactory.RunAsync(host.LaunchClaudeAsync).FileAndForget("claudecodevs/launch");
+        JoinableTaskFactory.RunAsync(() => host.LaunchClaudeAsync()).FileAndForget("claudecodevs/launch");
     }
 
     private void OnShowPanel(object sender, EventArgs e)
